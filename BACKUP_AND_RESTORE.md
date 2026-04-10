@@ -1,0 +1,166 @@
+# Backup and Restore Guide
+
+This guide explains how to export the current `assessment_platform` PostgreSQL database and import it into another database.
+
+It documents both supported approaches:
+- full dump/restore
+- plain SQL export/import
+
+## When To Use Each Approach
+
+### Full dump/restore
+
+Use this when you want:
+- the most complete PostgreSQL-native backup format
+- schema and data moved together
+- a better option for restoring into another PostgreSQL database
+
+Tools:
+- `pg_dump`
+- `pg_restore`
+
+### Plain SQL export/import
+
+Use this when you want:
+- a human-readable backup file
+- the ability to inspect the exported SQL
+- a simpler import path with `psql`
+
+Tools:
+- `pg_dump`
+- `psql`
+
+## Source Database Example
+
+Current local database name:
+- `assessment_platform`
+
+Target example:
+- `assessment_platform_new`
+
+Adjust usernames, passwords, hostnames, and database names to your environment.
+
+## Option 1: Full Dump and Restore
+
+### 1. Export the current database
+
+```powershell
+pg_dump -h localhost -U postgres -d assessment_platform -F c -f assessment_platform.dump
+```
+
+Notes:
+- `-F c` creates a custom-format dump
+- this is the recommended format for PostgreSQL-to-PostgreSQL restore
+
+### 2. Create the target database
+
+Example in `psql`:
+
+```sql
+CREATE DATABASE assessment_platform_new;
+```
+
+### 3. Restore the dump into the target database
+
+```powershell
+pg_restore -h localhost -U postgres -d assessment_platform_new --clean --if-exists assessment_platform.dump
+```
+
+Notes:
+- `--clean --if-exists` helps if the target DB already has objects that should be replaced
+
+## Option 2: Plain SQL Export and Import
+
+### 1. Export the current database to SQL
+
+```powershell
+pg_dump -h localhost -U postgres -d assessment_platform -F p -f assessment_platform.sql
+```
+
+Notes:
+- `-F p` creates a plain SQL file
+- this file can be opened and reviewed in a text editor
+
+### 2. Create the target database
+
+Example in `psql`:
+
+```sql
+CREATE DATABASE assessment_platform_new;
+```
+
+### 3. Import the SQL file into the target database
+
+```powershell
+psql -h localhost -U postgres -d assessment_platform_new -f assessment_platform.sql
+```
+
+## After Restoring Into Another Database
+
+### 1. Update `.env`
+
+Point the app to the target database:
+
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/assessment_platform_new?schema=public"
+```
+
+### 2. Sync Prisma schema
+
+```powershell
+npm run db:push
+```
+
+This is a good safety step to ensure the restored database matches the current Prisma schema.
+
+### 3. Do not reseed unless you actually want seed/demo data
+
+If you restored a real dump from the source database, you usually should **not** run:
+
+```powershell
+npm run db:seed
+```
+
+because the restored database already contains the data.
+
+### 4. Start the app
+
+```powershell
+npm run dev
+```
+
+## What Gets Moved
+
+Both approaches move the stored application data, including:
+- admin login data
+- teams
+- categories
+- libraries
+- templates and versions
+- assessment runs
+- assessment responses
+
+## Verification Checklist
+
+After restore, verify:
+- login works
+- templates are visible
+- teams are visible
+- assessment runs are present
+- reports load submitted data
+
+## Recommended Practice
+
+- use full dump/restore for PostgreSQL-to-PostgreSQL migrations
+- use plain SQL only when you specifically want a readable export
+- keep dump files out of Git
+- verify `.gitignore` covers:
+  - `*.sql`
+  - `*.dump`
+
+## Related Docs
+
+- [DATABASE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/DATABASE.md)
+- [INSTALLATION_WINDOWS.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_WINDOWS.md)
+- [INSTALLATION_LINUX.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_LINUX.md)
+- [INSTALLATION_MACOS.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_MACOS.md)

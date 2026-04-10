@@ -9,6 +9,7 @@
   - deployment: [DEPLOYMENT.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/DEPLOYMENT.md)
   - user/admin usage: [USER_GUIDE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/USER_GUIDE.md)
   - release history: [CHANGELOG.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/CHANGELOG.md)
+  - backup/restore: [BACKUP_AND_RESTORE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/BACKUP_AND_RESTORE.md)
 
 ## Authentication conventions
 

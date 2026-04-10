@@ -86,6 +86,7 @@ See [FEATURES_V1.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessme
 - macOS: [INSTALLATION_MACOS.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_MACOS.md)
 - Index: [INSTALLATION.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION.md)
 - Database: [DATABASE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/DATABASE.md)
+- Backup and restore: [BACKUP_AND_RESTORE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/BACKUP_AND_RESTORE.md)
 - Deployment: [DEPLOYMENT.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/DEPLOYMENT.md)
 - User guide: [USER_GUIDE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/USER_GUIDE.md)
 - Changelog: [CHANGELOG.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/CHANGELOG.md)
