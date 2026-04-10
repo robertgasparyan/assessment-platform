@@ -1,0 +1,863 @@
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
+import { StatCard } from "@/components/stat-card";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import type { AssessmentPeriodType, AssessmentRunSummary, Team, TemplateSummary } from "@/types";
+
+type DuplicateCheckResponse = {
+  periodLabel: string;
+  hasDuplicate: boolean;
+  matches: Array<{
+    id: string;
+    title: string;
+    status: AssessmentRunSummary["status"];
+    periodLabel: string;
+    updatedAt: string;
+    teamName: string;
+    templateName: string;
+  }>;
+};
+
+type PendingRunAction =
+  | { type: "archive"; run: AssessmentRunSummary }
+  | { type: "delete"; run: AssessmentRunSummary }
+  | { type: "restore"; run: AssessmentRunSummary };
+
+function toIsoDate(value: string) {
+  return new Date(`${value}T00:00:00.000Z`).toISOString();
+}
+
+function formatDate(value: string | null) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(value));
+}
+
+function startOfToday() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function getDueDateState(run: AssessmentRunSummary) {
+  if (!run.dueDate || run.status === "SUBMITTED" || run.status === "ARCHIVED") {
+    return null;
+  }
+
+  const dueDate = new Date(run.dueDate);
+  const today = startOfToday();
+  const diffDays = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    return { label: "Overdue", variant: "secondary" as const };
+  }
+
+  if (diffDays <= 3) {
+    return { label: "Due soon", variant: "default" as const };
+  }
+
+  return { label: "Scheduled", variant: "outline" as const };
+}
+
+function dueDateSortValue(run: AssessmentRunSummary) {
+  if (run.status === "ARCHIVED") {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  if (!run.dueDate) {
+    return Number.MAX_SAFE_INTEGER - 1;
+  }
+
+  return new Date(run.dueDate).getTime();
+}
+
+function RunTable({
+  actionLabel,
+  emptyMessage,
+  onArchive,
+  onDelete,
+  onRestore,
+  runs,
+  submittedView
+}: {
+  actionLabel?: string;
+  emptyMessage: string;
+  onArchive?: (run: AssessmentRunSummary) => void;
+  onDelete?: (run: AssessmentRunSummary) => void;
+  onRestore?: (run: AssessmentRunSummary) => void;
+  runs: AssessmentRunSummary[];
+  submittedView: boolean;
+}) {
+  if (!runs.length) {
+    return (
+      <div className="rounded-[1.25rem] border border-dashed bg-muted/20 px-6 py-10 text-sm text-muted-foreground">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Assessment</TableHead>
+          <TableHead>Team</TableHead>
+          <TableHead>Template</TableHead>
+          <TableHead>Owner</TableHead>
+          <TableHead>Period</TableHead>
+          <TableHead>Due</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Urgency</TableHead>
+          <TableHead>{submittedView ? "Submitted" : "Updated"}</TableHead>
+          <TableHead>Score</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {runs.map((run) => (
+          <TableRow className={getDueDateState(run)?.label === "Overdue" ? "bg-secondary/70" : undefined} key={run.id}>
+            <TableCell>
+              <div className="font-medium">{run.title}</div>
+            </TableCell>
+            <TableCell>{run.team.name}</TableCell>
+            <TableCell>
+              {run.templateVersion.name} v{run.templateVersion.versionNumber}
+            </TableCell>
+            <TableCell>{run.ownerName || "-"}</TableCell>
+            <TableCell>{run.periodLabel}</TableCell>
+            <TableCell>{formatDate(run.dueDate)}</TableCell>
+            <TableCell>
+              <Badge variant={run.status === "SUBMITTED" ? "success" : run.status === "IN_PROGRESS" ? "default" : "secondary"}>
+                {run.status}
+              </Badge>
+            </TableCell>
+            <TableCell>
+              {getDueDateState(run) ? <Badge variant={getDueDateState(run)?.variant}>{getDueDateState(run)?.label}</Badge> : "-"}
+            </TableCell>
+            <TableCell>{formatDate(submittedView ? run.submittedAt : run.updatedAt)}</TableCell>
+            <TableCell>{run.overallScore != null ? run.overallScore.toFixed(2) : "-"}</TableCell>
+            <TableCell className="text-right">
+              <div className="flex justify-end gap-2">
+                {run.status !== "ARCHIVED" ? (
+                  <Link
+                    className={cn(buttonVariants({ size: "sm", variant: submittedView ? "outline" : "default" }))}
+                    state={{ returnTo: submittedView ? "/assessments?tab=submitted" : "/assessments?tab=active" }}
+                    to={submittedView ? `/assessments/${run.id}/results` : `/assessments/${run.id}`}
+                  >
+                    {actionLabel ?? (submittedView ? "View results" : "Continue")}
+                  </Link>
+                ) : null}
+                {!submittedView && run.status !== "ARCHIVED" && onArchive ? (
+                  <Button onClick={() => onArchive(run)} size="sm" type="button" variant="outline">
+                    Archive
+                  </Button>
+                ) : null}
+                {!submittedView && run.status !== "ARCHIVED" && onDelete ? (
+                  <Button onClick={() => onDelete(run)} size="sm" type="button" variant="ghost">
+                    Delete
+                  </Button>
+                ) : null}
+                {!submittedView && run.status === "ARCHIVED" && onRestore ? (
+                  <Button onClick={() => onRestore(run)} size="sm" type="button" variant="outline">
+                    Restore
+                  </Button>
+                ) : null}
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+export function AssessmentsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryClient = useQueryClient();
+  const initialTab = searchParams.get("tab");
+  const [pageTab, setPageTab] = useState(initialTab === "active" || initialTab === "submitted" || initialTab === "create" ? initialTab : "create");
+  const [title, setTitle] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [teamId, setTeamId] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [periodType, setPeriodType] = useState<AssessmentPeriodType>("QUARTER");
+  const [periodLabel, setPeriodLabel] = useState("");
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [quarter, setQuarter] = useState(Math.min(4, Math.max(1, Math.ceil((new Date().getMonth() + 1) / 3))));
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [referenceDate, setReferenceDate] = useState("");
+  const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [templateFilter, setTemplateFilter] = useState("all");
+  const [periodTypeFilter, setPeriodTypeFilter] = useState("all");
+  const [dueDateFilter, setDueDateFilter] = useState("all");
+  const [submittedDateFrom, setSubmittedDateFrom] = useState("");
+  const [submittedDateTo, setSubmittedDateTo] = useState("");
+  const [scoreBandFilter, setScoreBandFilter] = useState("all");
+  const [pendingRunAction, setPendingRunAction] = useState<PendingRunAction | null>(null);
+
+  const runsQuery = useQuery({
+    queryKey: ["assessment-runs"],
+    queryFn: () => api.get<AssessmentRunSummary[]>("/assessment-runs")
+  });
+  const teamsQuery = useQuery({
+    queryKey: ["teams"],
+    queryFn: () => api.get<Team[]>("/teams")
+  });
+  const templatesQuery = useQuery({
+    queryKey: ["templates"],
+    queryFn: () => api.get<TemplateSummary[]>("/templates")
+  });
+
+  const templateOptions = useMemo(
+    () =>
+      (templatesQuery.data ?? []).map((template) => ({
+        value: template.id,
+        label: `${template.name} (${template.latestVersion ? `v${template.latestVersion.versionNumber}` : "no version"})`
+      })),
+    [templatesQuery.data]
+  );
+  const templateFilterOptions = useMemo(
+    () =>
+      Array.from(new Set((runsQuery.data ?? []).map((run) => run.templateVersion.name))).map((templateName) => ({
+        value: templateName,
+        label: templateName
+      })),
+    [runsQuery.data]
+  );
+  const teamOptions = useMemo(
+    () => (teamsQuery.data ?? []).map((team) => ({ value: team.id, label: team.name })),
+    [teamsQuery.data]
+  );
+
+  const selectedTemplate = (templatesQuery.data ?? []).find((template) => template.id === templateId);
+
+  const createPayload = useMemo(() => {
+    const basePayload = {
+      title,
+      teamId,
+      templateId,
+      templateVersionId: selectedTemplate?.latestVersion?.id ?? "",
+      ownerName: ownerName.trim() || undefined,
+      dueDate: dueDate ? toIsoDate(dueDate) : undefined,
+      periodType,
+      periodLabel: periodLabel.trim() || undefined
+    };
+
+    if (periodType === "QUARTER") {
+      return { ...basePayload, periodType, year, quarter };
+    }
+
+    if (periodType === "CUSTOM_RANGE") {
+      return {
+        ...basePayload,
+        periodType,
+        startDate: startDate ? toIsoDate(startDate) : "",
+        endDate: endDate ? toIsoDate(endDate) : ""
+      };
+    }
+
+    return {
+      ...basePayload,
+      periodType,
+      referenceDate: referenceDate ? toIsoDate(referenceDate) : ""
+    };
+  }, [dueDate, endDate, ownerName, periodLabel, periodType, quarter, referenceDate, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, title, year]);
+
+  const periodReady =
+    periodType === "QUARTER"
+      ? year >= 2024 && quarter >= 1 && quarter <= 4
+      : periodType === "CUSTOM_RANGE"
+        ? Boolean(startDate && endDate)
+        : Boolean(referenceDate);
+
+  const createReady = Boolean(title && teamId && templateId && selectedTemplate?.latestVersion?.id && periodReady);
+
+  const duplicateCheckQuery = useQuery({
+    queryKey: ["assessment-run-duplicate-check", createPayload],
+    queryFn: () => api.post<DuplicateCheckResponse>("/assessment-runs/check-duplicate", createPayload),
+    enabled: createReady
+  });
+
+  useEffect(() => {
+    setAllowDuplicate(false);
+  }, [createPayload]);
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      api.post("/assessment-runs", {
+        ...createPayload,
+        allowDuplicate
+      }),
+    onSuccess: () => {
+      toast.success("Assessment run created");
+      queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+      setTitle("");
+      setOwnerName("");
+      setDueDate("");
+      setPeriodLabel("");
+      setStartDate("");
+      setEndDate("");
+      setReferenceDate("");
+      setAllowDuplicate(false);
+      setPageTab("active");
+      setSearchParams({ tab: "active" });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (runId: string) => api.post(`/assessment-runs/${runId}/archive`),
+    onSuccess: () => {
+      toast.success("Run archived");
+      queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (runId: string) => api.delete(`/assessment-runs/${runId}`),
+    onSuccess: () => {
+      toast.success("Run deleted");
+      queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const restoreMutation = useMutation({
+    mutationFn: (runId: string) => api.post(`/assessment-runs/${runId}/unarchive`),
+    onSuccess: () => {
+      toast.success("Run restored");
+      queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+
+  const runs = runsQuery.data ?? [];
+  const activeRuns = useMemo(() => runs.filter((run) => run.status === "DRAFT" || run.status === "IN_PROGRESS"), [runs]);
+  const submittedRuns = useMemo(() => runs.filter((run) => run.status === "SUBMITTED"), [runs]);
+  const archivedRuns = useMemo(() => runs.filter((run) => run.status === "ARCHIVED"), [runs]);
+
+  const commonFilteredRuns = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    return runs.filter((run) => {
+      const matchesSearch =
+        !query
+        || run.title.toLowerCase().includes(query)
+        || run.team.name.toLowerCase().includes(query)
+        || run.templateVersion.name.toLowerCase().includes(query)
+        || run.periodLabel.toLowerCase().includes(query)
+        || (run.ownerName ?? "").toLowerCase().includes(query);
+      const matchesTeam = teamFilter === "all" || run.team.id === teamFilter;
+      const matchesTemplate = templateFilter === "all" || run.templateVersion.name === templateFilter;
+      const matchesPeriodType = periodTypeFilter === "all" || run.periodType === periodTypeFilter;
+      return matchesSearch && matchesTeam && matchesTemplate && matchesPeriodType;
+    });
+  }, [periodTypeFilter, runs, search, teamFilter, templateFilter]);
+
+  const filteredActiveRuns = commonFilteredRuns
+    .filter((run) => run.status === "DRAFT" || run.status === "IN_PROGRESS")
+    .filter((run) => {
+      const dueState = getDueDateState(run);
+      return (
+        dueDateFilter === "all"
+        || (dueDateFilter === "overdue" && dueState?.label === "Overdue")
+        || (dueDateFilter === "due_soon" && dueState?.label === "Due soon")
+        || (dueDateFilter === "scheduled" && dueState?.label === "Scheduled")
+        || (dueDateFilter === "no_due_date" && !run.dueDate)
+      );
+    })
+    .sort((a, b) => {
+      const dueDiff = dueDateSortValue(a) - dueDateSortValue(b);
+      if (dueDiff !== 0) {
+        return dueDiff;
+      }
+
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  const filteredSubmittedRuns = commonFilteredRuns
+    .filter((run) => run.status === "SUBMITTED")
+    .filter((run) => {
+      const submittedAt = run.submittedAt ? new Date(run.submittedAt) : null;
+      const matchesSubmittedFrom = !submittedDateFrom || (submittedAt && submittedAt >= new Date(`${submittedDateFrom}T00:00:00.000Z`));
+      const matchesSubmittedTo = !submittedDateTo || (submittedAt && submittedAt <= new Date(`${submittedDateTo}T23:59:59.999Z`));
+      const matchesScoreBand =
+        scoreBandFilter === "all"
+        || (scoreBandFilter === "high" && typeof run.overallScore === "number" && run.overallScore >= 4)
+        || (scoreBandFilter === "medium" && typeof run.overallScore === "number" && run.overallScore >= 2.5 && run.overallScore < 4)
+        || (scoreBandFilter === "low" && typeof run.overallScore === "number" && run.overallScore < 2.5)
+        || (scoreBandFilter === "no_score" && run.overallScore == null);
+
+      return Boolean(matchesSubmittedFrom && matchesSubmittedTo && matchesScoreBand);
+    })
+    .sort((a, b) => new Date(b.submittedAt ?? b.updatedAt).getTime() - new Date(a.submittedAt ?? a.updatedAt).getTime());
+  const filteredArchivedRuns = commonFilteredRuns
+    .filter((run) => run.status === "ARCHIVED")
+    .filter((run) => {
+      const dueState = getDueDateState(run);
+      return (
+        dueDateFilter === "all"
+        || (dueDateFilter === "overdue" && dueState?.label === "Overdue")
+        || (dueDateFilter === "due_soon" && dueState?.label === "Due soon")
+        || (dueDateFilter === "scheduled" && dueState?.label === "Scheduled")
+        || (dueDateFilter === "no_due_date" && !run.dueDate)
+      );
+    })
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+  const submittedThisMonth = submittedRuns.filter((run) => {
+    if (!run.submittedAt) {
+      return false;
+    }
+
+    const submittedAt = new Date(run.submittedAt);
+    const now = new Date();
+    return submittedAt.getFullYear() === now.getFullYear() && submittedAt.getMonth() === now.getMonth();
+  }).length;
+
+  const filterBlock = (
+    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="space-y-2">
+        <Label>Search runs</Label>
+        <Input placeholder="Title, team, template, owner, or period" value={search} onChange={(event) => setSearch(event.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label>Team</Label>
+        <Select
+          options={[{ value: "all", label: "All teams" }, ...teamOptions]}
+          value={teamFilter}
+          onChange={(event) => setTeamFilter(event.target.value)}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>Template</Label>
+        <Select
+          options={[{ value: "all", label: "All templates" }, ...templateFilterOptions]}
+          value={templateFilter}
+          onChange={(event) => setTemplateFilter(event.target.value)}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>Period type</Label>
+        <Select
+          options={[
+            { value: "all", label: "All period types" },
+            { value: "QUARTER", label: "Quarter" },
+            { value: "CUSTOM_RANGE", label: "Custom range" },
+            { value: "POINT_IN_TIME", label: "Specific date" }
+          ]}
+          value={periodTypeFilter}
+          onChange={(event) => setPeriodTypeFilter(event.target.value)}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>Due date</Label>
+        <Select
+          options={[
+            { value: "all", label: "All due states" },
+            { value: "overdue", label: "Overdue" },
+            { value: "due_soon", label: "Due soon" },
+            { value: "scheduled", label: "Scheduled" },
+            { value: "no_due_date", label: "No due date" }
+          ]}
+          value={dueDateFilter}
+          onChange={(event) => setDueDateFilter(event.target.value)}
+        />
+      </div>
+    </div>
+  );
+
+  const submittedFilterBlock = (
+    <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="space-y-2 xl:col-span-2">
+          <Label>Search submitted runs</Label>
+          <Input
+            placeholder="Title, team, template, owner, or period"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Team</Label>
+          <Select
+            options={[{ value: "all", label: "All teams" }, ...teamOptions]}
+            value={teamFilter}
+            onChange={(event) => setTeamFilter(event.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Template</Label>
+          <Select
+            options={[{ value: "all", label: "All templates" }, ...templateFilterOptions]}
+            value={templateFilter}
+            onChange={(event) => setTemplateFilter(event.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="space-y-2">
+          <Label>Period type</Label>
+          <Select
+            options={[
+              { value: "all", label: "All period types" },
+              { value: "QUARTER", label: "Quarter" },
+              { value: "CUSTOM_RANGE", label: "Custom range" },
+              { value: "POINT_IN_TIME", label: "Specific date" }
+            ]}
+            value={periodTypeFilter}
+            onChange={(event) => setPeriodTypeFilter(event.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Submitted from</Label>
+          <Input type="date" value={submittedDateFrom} onChange={(event) => setSubmittedDateFrom(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label>Submitted to</Label>
+          <Input type="date" value={submittedDateTo} onChange={(event) => setSubmittedDateTo(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label>Score band</Label>
+          <Select
+            options={[
+              { value: "all", label: "All scores" },
+              { value: "high", label: "High (4.0+)" },
+              { value: "medium", label: "Medium (2.5-3.99)" },
+              { value: "low", label: "Low (<2.5)" },
+              { value: "no_score", label: "No score" }
+            ]}
+            value={scoreBandFilter}
+            onChange={(event) => setScoreBandFilter(event.target.value)}
+          />
+        </div>
+        <div className="flex items-end">
+          <Button
+            className="w-full"
+            onClick={() => {
+              setSearch("");
+              setTeamFilter("all");
+              setTemplateFilter("all");
+              setPeriodTypeFilter("all");
+              setSubmittedDateFrom("");
+              setSubmittedDateTo("");
+              setScoreBandFilter("all");
+            }}
+            type="button"
+            variant="outline"
+          >
+            Reset submitted filters
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "active" || tab === "submitted" || tab === "create") {
+      setPageTab(tab);
+    }
+  }, [searchParams]);
+
+  const confirmRunAction = () => {
+    if (!pendingRunAction) {
+      return;
+    }
+
+    if (pendingRunAction.type === "archive") {
+      archiveMutation.mutate(pendingRunAction.run.id);
+    }
+
+    if (pendingRunAction.type === "delete") {
+      deleteMutation.mutate(pendingRunAction.run.id);
+    }
+
+    if (pendingRunAction.type === "restore") {
+      restoreMutation.mutate(pendingRunAction.run.id);
+    }
+
+    setPendingRunAction(null);
+  };
+
+  const pendingActionCopy = pendingRunAction
+    ? pendingRunAction.type === "archive"
+      ? {
+          title: "Archive assessment run?",
+          description: "The run will move out of the active list but can still be restored later without losing saved responses.",
+          confirmLabel: "Archive run"
+        }
+      : pendingRunAction.type === "delete"
+        ? {
+            title: "Delete assessment run?",
+            description: "This permanently removes the draft run and all saved responses. This action cannot be undone.",
+            confirmLabel: "Delete run"
+          }
+        : {
+            title: "Restore assessment run?",
+            description: "The run will return to the active list and can be continued from its previous draft state.",
+            confirmLabel: "Restore run"
+          }
+    : null;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">Assessment runs</div>
+        <h1 className="mt-2 text-4xl font-semibold">Launch, track, and review team assessments</h1>
+        <p className="mt-2 max-w-3xl text-muted-foreground">
+          Start new runs from published templates, keep active work visible, and give submitted assessments a cleaner reporting surface.
+        </p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatCard hint="Draft or in-progress work" label="Active runs" value={activeRuns.length} />
+        <StatCard hint="Soft-hidden operational history" label="Archived runs" value={archivedRuns.length} />
+        <StatCard hint="Completed assessment history" label="Submitted runs" value={submittedRuns.length} />
+        <StatCard hint="Closed during the current month" label="Submitted this month" value={submittedThisMonth} />
+        <StatCard hint="Templates ready to launch from" label="Published templates" value={templateOptions.length} />
+      </div>
+
+      {pendingRunAction && pendingActionCopy ? (
+        <Card className="border-primary/30 shadow-sm">
+          <CardHeader>
+            <CardTitle>{pendingActionCopy.title}</CardTitle>
+            <CardDescription>
+              {pendingActionCopy.description}
+              {" "}
+              <span className="font-medium text-foreground">{pendingRunAction.run.title}</span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-3">
+            <Button
+              onClick={confirmRunAction}
+              type="button"
+              variant={pendingRunAction.type === "delete" ? "destructive" : "default"}
+            >
+              {pendingActionCopy.confirmLabel}
+            </Button>
+            <Button onClick={() => setPendingRunAction(null)} type="button" variant="outline">
+              Cancel
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <Tabs
+        onValueChange={(value) => {
+          setPageTab(value);
+          setSearchParams({ tab: value });
+        }}
+        value={pageTab}
+      >
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="create">Create</TabsTrigger>
+          <TabsTrigger value="active">Active</TabsTrigger>
+          <TabsTrigger value="submitted">Submitted</TabsTrigger>
+        </TabsList>
+
+        <TabsContent className="space-y-6" value="create">
+          <Card>
+            <CardHeader>
+              <CardTitle>Create assessment run</CardTitle>
+              <CardDescription>
+                Create a collaborative run from a published template, optionally assign an owner and due date, and detect duplicate periods before launch.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2 md:col-span-2">
+                <Label>Title</Label>
+                <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Template</Label>
+                <Select
+                  options={[{ value: "", label: "Select template" }, ...templateOptions]}
+                  value={templateId}
+                  onChange={(event) => setTemplateId(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Team</Label>
+                <Select
+                  options={[{ value: "", label: "Select team" }, ...teamOptions]}
+                  value={teamId}
+                  onChange={(event) => setTeamId(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Owner</Label>
+                <Input placeholder="Optional owner or coordinator" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Due date</Label>
+                <Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Period type</Label>
+                <Select
+                  options={[
+                    { value: "QUARTER", label: "Quarter" },
+                    { value: "CUSTOM_RANGE", label: "Custom range" },
+                    { value: "POINT_IN_TIME", label: "Specific date" }
+                  ]}
+                  value={periodType}
+                  onChange={(event) => setPeriodType(event.target.value as AssessmentPeriodType)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Label override</Label>
+                <Input placeholder="Optional custom label" value={periodLabel} onChange={(event) => setPeriodLabel(event.target.value)} />
+              </div>
+              {periodType === "QUARTER" ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Year</Label>
+                    <Input type="number" value={year} onChange={(event) => setYear(Number(event.target.value))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Quarter</Label>
+                    <Select
+                      options={[
+                        { value: "1", label: "Q1" },
+                        { value: "2", label: "Q2" },
+                        { value: "3", label: "Q3" },
+                        { value: "4", label: "Q4" }
+                      ]}
+                      value={String(quarter)}
+                      onChange={(event) => setQuarter(Number(event.target.value))}
+                    />
+                  </div>
+                </>
+              ) : null}
+              {periodType === "CUSTOM_RANGE" ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Start date</Label>
+                    <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>End date</Label>
+                    <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                  </div>
+                </>
+              ) : null}
+              {periodType === "POINT_IN_TIME" ? (
+                <div className="space-y-2">
+                  <Label>Assessment date</Label>
+                  <Input type="date" value={referenceDate} onChange={(event) => setReferenceDate(event.target.value)} />
+                </div>
+              ) : null}
+
+              {duplicateCheckQuery.data?.hasDuplicate ? (
+                <div className="space-y-3 rounded-[1.25rem] border border-primary/20 bg-accent p-4 md:col-span-2">
+                  <div>
+                    <div className="font-semibold text-foreground">Existing run found for this team, template, and period</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      Creating another run is allowed, but should be intentional.
+                    </div>
+                  </div>
+                  <div className="space-y-2 text-sm text-muted-foreground">
+                    {duplicateCheckQuery.data.matches.map((match) => (
+                      <div className="rounded-xl border border-border bg-white px-3 py-2" key={match.id}>
+                        {match.title} · {match.status} · {formatDate(match.updatedAt)}
+                      </div>
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+                    <input checked={allowDuplicate} onChange={(event) => setAllowDuplicate(event.target.checked)} type="checkbox" />
+                    Allow duplicate run for this period
+                  </label>
+                </div>
+              ) : null}
+
+              <div className="md:col-span-2">
+                <Button
+                  className="w-full md:w-auto"
+                  disabled={!createReady || createMutation.isPending || (duplicateCheckQuery.data?.hasDuplicate && !allowDuplicate)}
+                  onClick={() => createMutation.mutate()}
+                  type="button"
+                >
+                  {duplicateCheckQuery.data?.hasDuplicate && allowDuplicate ? "Create duplicate run" : "Create run"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent className="space-y-6" value="active">
+          <Card>
+            <CardHeader>
+              <CardTitle>Active runs</CardTitle>
+              <CardDescription>Draft and in-progress assessments that still need team input or submission.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {filterBlock}
+              <RunTable
+                emptyMessage="No active runs match the current filters."
+                onArchive={(run) => setPendingRunAction({ type: "archive", run })}
+                onDelete={(run) => setPendingRunAction({ type: "delete", run })}
+                runs={filteredActiveRuns}
+                submittedView={false}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Archived runs</CardTitle>
+              <CardDescription>Temporarily hidden runs can be restored back into active work without losing their saved responses.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <RunTable
+                actionLabel="Archived"
+                emptyMessage="No archived runs match the current filters."
+                onRestore={(run) => setPendingRunAction({ type: "restore", run })}
+                runs={filteredArchivedRuns}
+                submittedView={false}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent className="space-y-6" value="submitted">
+          <Card>
+            <CardHeader>
+              <CardTitle>Submitted runs</CardTitle>
+              <CardDescription>Completed assessments ready for results review, comparison, and print summaries.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {submittedFilterBlock}
+              <RunTable
+                emptyMessage="No submitted runs match the current filters."
+                runs={filteredSubmittedRuns}
+                submittedView={true}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AssessmentRunStatus {
+  DRAFT
+  IN_PROGRESS
+  SUBMITTED
+  ARCHIVED
+}
+
+enum AssessmentPeriodType {
+  QUARTER
+  CUSTOM_RANGE
+  POINT_IN_TIME
+}
+
+model AdminUser {
+  id               String   @id @default(cuid())
+  username         String   @unique
+  passwordHash     String
+  sessionToken     String?  @unique
+  sessionExpiresAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Team {
+  id             String          @id @default(cuid())
+  name           String          @unique
+  description    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  assessmentRuns AssessmentRun[]
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AssessmentTemplate {
+  id             String            @id @default(cuid())
+  name           String
+  slug           String            @unique
+  description    String?
+  category       String?
+  status         String            @default("ACTIVE")
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  versions       TemplateVersion[]
+  assessmentRuns AssessmentRun[]
+}
+
+model TemplateDraft {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String
+  description   String?
+  category      String?
+  status        String   @default("DRAFT")
+  scoringLabels Json
+  draftData     Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model QuestionLibraryItem {
+  id          String   @id @default(cuid())
+  title       String
+  prompt      String
+  guidance    String?
+  levels      Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DomainLibraryItem {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  questions   Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TemplateVersion {
+  id             String             @id @default(cuid())
+  versionNumber  Int
+  templateId     String
+  name           String
+  description    String?
+  category       String?
+  scoringLabels  Json
+  createdAt      DateTime           @default(now())
+  template       AssessmentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  domains        TemplateDomain[]
+  assessmentRuns AssessmentRun[]
+
+  @@unique([templateId, versionNumber])
+}
+
+model TemplateDomain {
+  id              String            @id @default(cuid())
+  versionId       String
+  title           String
+  description     String?
+  sortOrder       Int
+  templateVersion TemplateVersion   @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  questions       TemplateQuestion[]
+}
+
+model TemplateQuestion {
+  id             String               @id @default(cuid())
+  domainId       String
+  prompt         String
+  guidance       String?
+  sortOrder      Int
+  templateDomain TemplateDomain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  levels         QuestionLevel[]
+  responses      AssessmentResponse[]
+}
+
+model QuestionLevel {
+  id          String           @id @default(cuid())
+  questionId  String
+  value       Int
+  label       String
+  description String
+  sortOrder   Int
+  question    TemplateQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
+
+model AssessmentRun {
+  id                String              @id @default(cuid())
+  templateId        String
+  templateVersionId String
+  teamId            String
+  title             String
+  ownerName         String?
+  dueDate           DateTime?
+  periodType        AssessmentPeriodType @default(QUARTER)
+  periodLabel       String
+  periodBucket      String               @default("")
+  periodSortDate    DateTime             @default(now())
+  year              Int?
+  quarter           Int?
+  startDate         DateTime?
+  endDate           DateTime?
+  referenceDate     DateTime?
+  status            AssessmentRunStatus @default(DRAFT)
+  overallScore      Float?
+  submissionSummary String?
+  submittedAt       DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  template          AssessmentTemplate  @relation(fields: [templateId], references: [id])
+  templateVersion   TemplateVersion     @relation(fields: [templateVersionId], references: [id])
+  team              Team                @relation(fields: [teamId], references: [id])
+  responses         AssessmentResponse[]
+}
+
+model AssessmentResponse {
+  id              String           @id @default(cuid())
+  assessmentRunId String
+  questionId      String
+  selectedValue   Int
+  selectedLabel   String
+  comment         String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  assessmentRun   AssessmentRun    @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  question        TemplateQuestion @relation(fields: [questionId], references: [id])
+
+  @@unique([assessmentRunId, questionId])
+}

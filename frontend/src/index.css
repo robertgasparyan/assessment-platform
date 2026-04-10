@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 96%;
+  --foreground: 0 0% 20%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 20%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 20%;
+  --primary: 97 49% 51%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 96%;
+  --secondary-foreground: 0 0% 20%;
+  --muted: 98 53% 94%;
+  --muted-foreground: 0 0% 33%;
+  --accent: 98 53% 94%;
+  --accent-foreground: 0 0% 20%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 0 0% 85%;
+  --input: 0 0% 85%;
+  --ring: 97 49% 51%;
+  --radius: 1rem;
+}
+
+* {
+  @apply border-border;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: "Segoe UI", sans-serif;
+  background-image:
+    radial-gradient(circle at top left, rgba(114, 191, 68, 0.14), transparent 26%),
+    radial-gradient(circle at top right, rgba(238, 248, 232, 0.85), transparent 22%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 244, 244, 0.98));
+  min-height: 100vh;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  body {
+    background: white !important;
+    background-image: none !important;
+    min-height: auto;
+  }
+
+  .print-hidden {
+    display: none !important;
+  }
+
+  .print-report-only {
+    display: block !important;
+  }
+
+  .print-report-only,
+  .print-report-only * {
+    color: #333333 !important;
+  }
+}
