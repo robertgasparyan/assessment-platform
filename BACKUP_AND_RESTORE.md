@@ -40,6 +40,24 @@ Target example:
 
 Adjust usernames, passwords, hostnames, and database names to your environment.
 
+## Important Distinction
+
+<div style="color:#c62828; font-weight:700;">
+If you want to overwrite the existing database, use the existing database name itself: <code>assessment_platform</code>.
+</div>
+
+<div style="color:#c62828;">
+<code>assessment_platform_new</code> is only an example for restoring into a different target database. It is not required when your goal is to replace the current database contents.
+</div>
+
+Examples:
+- restore into a different database:
+  - source: `assessment_platform`
+  - target: `assessment_platform_new`
+- overwrite the current database:
+  - source: `assessment_platform`
+  - target: `assessment_platform`
+
 ## Option 1: Full Dump and Restore
 
 ### 1. Export the current database
@@ -69,6 +87,16 @@ pg_restore -h localhost -U postgres -d assessment_platform_new --clean --if-exis
 Notes:
 - `--clean --if-exists` helps if the target DB already has objects that should be replaced
 
+### Overwrite the existing `assessment_platform` database
+
+<div style="color:#c62828; font-weight:700;">
+For overwrite, the target database should be <code>assessment_platform</code>, not <code>assessment_platform_new</code>.
+</div>
+
+```powershell
+pg_restore -h localhost -U postgres -d assessment_platform --clean --if-exists assessment_platform.dump
+```
+
 ## Option 2: Plain SQL Export and Import
 
 ### 1. Export the current database to SQL
@@ -93,6 +121,37 @@ CREATE DATABASE assessment_platform_new;
 
 ```powershell
 psql -h localhost -U postgres -d assessment_platform_new -f assessment_platform.sql
+```
+
+### Overwrite the existing `assessment_platform` database
+
+<div style="color:#c62828; font-weight:700;">
+For overwrite, import back into <code>assessment_platform</code> itself.
+</div>
+
+```powershell
+psql -h localhost -U postgres -d assessment_platform -f assessment_platform.sql
+```
+
+## Full Reset Then Restore
+
+If you want the cleanest overwrite flow, drop and recreate the existing database first.
+
+<div style="color:#c62828; font-weight:700;">
+This replaces the current <code>assessment_platform</code> database completely.
+</div>
+
+Example in `psql`:
+
+```sql
+DROP DATABASE assessment_platform;
+CREATE DATABASE assessment_platform;
+```
+
+Then restore:
+
+```powershell
+pg_restore -h localhost -U postgres -d assessment_platform assessment_platform.dump
 ```
 
 ## After Restoring Into Another Database
