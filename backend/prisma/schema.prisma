@@ -20,14 +20,62 @@ enum AssessmentPeriodType {
   POINT_IN_TIME
 }
 
-model AdminUser {
-  id               String   @id @default(cuid())
-  username         String   @unique
+enum UserRole {
+  ADMIN
+  TEMPLATE_MANAGER
+  TEAM_LEAD
+  TEAM_MEMBER
+  VIEWER
+}
+
+enum TeamMembershipRole {
+  LEAD
+  MEMBER
+}
+
+model User {
+  id               String               @id @default(cuid())
+  displayName      String
+  username         String               @unique
+  email            String?              @unique
+  role             UserRole             @default(TEAM_MEMBER)
+  isActive         Boolean              @default(true)
+  mustChangePassword Boolean            @default(false)
   passwordHash     String
-  sessionToken     String?  @unique
+  sessionToken     String?              @unique
   sessionExpiresAt DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  inviteToken      String?              @unique
+  inviteExpiresAt  DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  teamMemberships     UserTeamMembership[]
+  ownedRuns           AssessmentRun[]           @relation("AssessmentRunOwner")
+  assignmentChanges   AssessmentRunAssignment[] @relation("AssessmentRunAssignedByUser")
+  assignmentFromEvents AssessmentRunAssignment[] @relation("AssessmentRunFromUser")
+  assignmentToEvents   AssessmentRunAssignment[] @relation("AssessmentRunToUser")
+  createdShareLinks    ReportShareLink[]
+  auditLogs            AuditLog[]
+  notifications        Notification[]
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model UserTeamMembership {
+  id             String             @id @default(cuid())
+  userId         String
+  teamId         String
+  membershipRole TeamMembershipRole @default(MEMBER)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team           Team               @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
 }
 
 model Team {
@@ -37,6 +85,7 @@ model Team {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   assessmentRuns AssessmentRun[]
+  memberships    UserTeamMembership[]
 }
 
 model Category {
@@ -144,6 +193,7 @@ model AssessmentRun {
   templateId        String
   templateVersionId String
   teamId            String
+  ownerUserId       String?
   title             String
   ownerName         String?
   dueDate           DateTime?
@@ -165,7 +215,28 @@ model AssessmentRun {
   template          AssessmentTemplate  @relation(fields: [templateId], references: [id])
   templateVersion   TemplateVersion     @relation(fields: [templateVersionId], references: [id])
   team              Team                @relation(fields: [teamId], references: [id])
+  ownerUser         User?               @relation("AssessmentRunOwner", fields: [ownerUserId], references: [id])
   responses         AssessmentResponse[]
+  assignmentHistory AssessmentRunAssignment[]
+  shareLinks        ReportShareLink[]
+  aiSummaries       AiAssessmentSummary[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+}
+
+model AssessmentRunAssignment {
+  id                String        @id @default(cuid())
+  assessmentRunId   String
+  assignedByUserId  String
+  fromUserId        String?
+  toUserId          String?
+  fromOwnerName     String?
+  toOwnerName       String?
+  createdAt         DateTime      @default(now())
+  assessmentRun     AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  assignedByUser    User          @relation("AssessmentRunAssignedByUser", fields: [assignedByUserId], references: [id])
+  fromUser          User?         @relation("AssessmentRunFromUser", fields: [fromUserId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  toUser            User?         @relation("AssessmentRunToUser", fields: [toUserId], references: [id], onDelete: SetNull, onUpdate: Cascade)
 }
 
 model AssessmentResponse {
@@ -181,4 +252,71 @@ model AssessmentResponse {
   question        TemplateQuestion @relation(fields: [questionId], references: [id])
 
   @@unique([assessmentRunId, questionId])
+}
+
+model ReportShareLink {
+  id              String        @id @default(cuid())
+  token           String        @unique
+  assessmentRunId String
+  createdByUserId String
+  isRevoked       Boolean       @default(false)
+  expiresAt       DateTime?
+  createdAt       DateTime      @default(now())
+  assessmentRun   AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  createdByUser   User          @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id              String        @id @default(cuid())
+  actorUserId     String?
+  assessmentRunId String?
+  entityType      String
+  entityId        String
+  action          String
+  summary         String
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+  actorUser       User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  assessmentRun   AssessmentRun? @relation(fields: [assessmentRunId], references: [id], onDelete: SetNull)
+}
+
+model Notification {
+  id              String        @id @default(cuid())
+  userId          String
+  assessmentRunId String?
+  type            String
+  title           String
+  message         String
+  linkUrl         String?
+  isRead          Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  readAt          DateTime?
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assessmentRun   AssessmentRun? @relation(fields: [assessmentRunId], references: [id], onDelete: SetNull)
+}
+
+model AiAssessmentSummary {
+  id                String        @id @default(cuid())
+  assessmentRunId   String
+  provider          String
+  model             String
+  compareToRunId    String?
+  payload           Json
+  generatedByUserId String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  assessmentRun     AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentRunId, provider, model, compareToRunId])
+}
+
+model AiReportsBrief {
+  id                String   @id @default(cuid())
+  cacheKey          String   @unique
+  provider          String
+  model             String
+  payload           Json
+  generatedByUserId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }

@@ -3,14 +3,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  AiTemplateBuilder,
+} from "@/components/ai-template-builder";
+import {
   TemplateAuthoringStudio,
   type TemplateAuthoringDraft
 } from "@/components/template-authoring-studio";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { downloadCsv } from "@/lib/export";
 import { api } from "@/lib/api";
-import type { Category, LibraryDomain, LibraryQuestion, TemplateDetail, TemplateDraft, TemplateSummary } from "@/types";
+import type { AiStatus, Category, LibraryDomain, LibraryQuestion, TemplateDetail, TemplateDraft, TemplateSummary, TemplateVersion } from "@/types";
 
 function toPayload(input: TemplateAuthoringDraft) {
   return {
@@ -25,6 +29,110 @@ function toPayload(input: TemplateAuthoringDraft) {
   };
 }
 
+function sanitizeFilenamePart(value: string) {
+  return value
+    .trim()
+    .replace(/[<>:"/\\|?*]+/g, "")
+    .replace(/\s+/g, "-")
+    .toLowerCase();
+}
+
+function buildTemplateCsvRows(input: {
+  source: "draft" | "published";
+  templateName: string;
+  slug: string;
+  description?: string;
+  category?: string;
+  versionNumber?: number | null;
+  draftStatus?: string;
+  scoringLabels: string[];
+  domains: TemplateVersion["domains"];
+}) {
+  const rows: Array<Record<string, unknown>> = [];
+
+  input.domains.forEach((domain, domainIndex) => {
+    domain.questions.forEach((question, questionIndex) => {
+      const row: Record<string, unknown> = {
+        Source: input.source,
+        "Template Name": input.templateName,
+        Slug: input.slug,
+        Category: input.category ?? "",
+        Description: input.description ?? "",
+        "Version Number": input.versionNumber ?? "",
+        "Draft Status": input.draftStatus ?? "",
+        "Scoring Labels": input.scoringLabels.join(" | "),
+        "Domain Order": domainIndex + 1,
+        Domain: domain.title,
+        "Domain Description": domain.description ?? "",
+        "Question Order": questionIndex + 1,
+        Question: question.prompt,
+        Guidance: question.guidance ?? "",
+        "Level Count": question.levels.length
+      };
+
+      question.levels.forEach((level, levelIndex) => {
+        const displayIndex = levelIndex + 1;
+        row[`Level ${displayIndex} Value`] = level.value;
+        row[`Level ${displayIndex} Label`] = level.label;
+        row[`Level ${displayIndex} Description`] = level.description;
+      });
+
+      rows.push(row);
+    });
+  });
+
+  return rows;
+}
+
+function exportDraftTemplateCsv(draft: TemplateDraft) {
+  const rows = buildTemplateCsvRows({
+    source: "draft",
+    templateName: draft.name || "Untitled draft",
+    slug: draft.slug || "draft-template",
+    description: draft.description,
+    category: draft.category,
+    versionNumber: null,
+    draftStatus: draft.status,
+    scoringLabels: draft.scoringLabels,
+    domains: draft.domains
+  });
+
+  if (!rows.length) {
+    toast.error("This draft does not have any questions to export yet");
+    return;
+  }
+
+  downloadCsv(`${sanitizeFilenamePart(draft.name || "template-draft")}.csv`, rows);
+  toast.success("Draft template exported");
+}
+
+function exportPublishedTemplateCsv(detail: TemplateDetail) {
+  const latestVersion = detail.versions[0];
+  if (!latestVersion) {
+    toast.error("This template does not have a published version to export");
+    return;
+  }
+
+  const rows = buildTemplateCsvRows({
+    source: "published",
+    templateName: detail.name,
+    slug: detail.slug,
+    description: detail.description,
+    category: detail.category,
+    versionNumber: latestVersion.versionNumber,
+    scoringLabels: latestVersion.scoringLabels,
+    domains: latestVersion.domains
+  });
+
+  if (!rows.length) {
+    toast.error("This template does not have any questions to export");
+    return;
+  }
+
+  downloadCsv(`${sanitizeFilenamePart(detail.name)}-v${latestVersion.versionNumber}.csv`, rows);
+  toast.success("Template exported");
+}
+
 export function TemplatesPage() {
   const queryClient = useQueryClient();
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
@@ -32,6 +140,7 @@ export function TemplatesPage() {
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [templateTab, setTemplateTab] = useState("author");
   const [pendingTemplateDeleteId, setPendingTemplateDeleteId] = useState<string | null>(null);
+  const [aiBuilderDraft, setAiBuilderDraft] = useState<TemplateAuthoringDraft | null>(null);
 
   const templatesQuery = useQuery({
     queryKey: ["templates"],
@@ -48,6 +157,10 @@ export function TemplatesPage() {
   const categoriesQuery = useQuery({
     queryKey: ["categories"],
     queryFn: () => api.get<Category[]>("/categories")
+  });
+  const aiStatusQuery = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => api.get<AiStatus>("/settings/ai-status")
   });
   const domainLibraryQuery = useQuery({
     queryKey: ["domain-library"],
@@ -229,6 +342,7 @@ export function TemplatesPage() {
       <Tabs value={templateTab} onValueChange={setTemplateTab}>
         <TabsList>
           <TabsTrigger value="author">Author</TabsTrigger>
+          {aiStatusQuery.data?.enabled ? <TabsTrigger value="ai-builder">AI Builder</TabsTrigger> : null}
           <TabsTrigger value="drafts">Drafts</TabsTrigger>
           <TabsTrigger value="existing">Existing Templates</TabsTrigger>
         </TabsList>
@@ -255,7 +369,7 @@ export function TemplatesPage() {
                       }))
                     }))
                   }
-                : undefined)
+                : aiBuilderDraft ?? undefined)
             }
             initialDraftId={editingTemplateId ?? activeDraft?.id ?? null}
             onDeleteDomainLibrary={(domainId) => deleteDomainLibraryMutation.mutate(domainId)}
@@ -267,16 +381,18 @@ export function TemplatesPage() {
             onStartBlank={() => {
               setEditingTemplateId(null);
               setActiveDraftId(null);
+              setAiBuilderDraft(null);
             }}
             onUpdateDomainLibrary={(domainId, domain) => updateDomainLibraryMutation.mutate({ id: domainId, domain })}
             onUpdateQuestionLibrary={(questionId, question) =>
               updateQuestionLibraryMutation.mutate({ id: questionId, question })
             }
             onSubmit={(draft) =>
-              editingTemplateId
+                editingTemplateId
                 ? updateTemplateMutation.mutate({ templateId: editingTemplateId, draft })
                 : createMutation.mutate(draft)
             }
+            aiEnabled={Boolean(aiStatusQuery.data?.enabled)}
             questionLibrary={questionLibraryQuery.data ?? []}
             submitLabel={editingTemplateId ? "Save as new template version" : "Publish template version"}
             title={editingTemplateId ? "Edit template" : "Template authoring studio"}
@@ -295,12 +411,35 @@ export function TemplatesPage() {
           />
         </TabsContent>
 
+        {aiStatusQuery.data?.enabled ? (
+          <TabsContent value="ai-builder">
+            <AiTemplateBuilder
+              categories={categoriesQuery.data ?? []}
+              onSaveGeneratedDraft={async (draft) => {
+                const saved = await saveDraftMutation.mutateAsync({ draft, draftId: null });
+                setActiveDraftId(saved.id);
+                setAiBuilderDraft(draft);
+                toast.success("Generated draft saved");
+              }}
+              onContinueToAuthoring={(draft) => {
+                setAiBuilderDraft(draft);
+                setEditingTemplateId(null);
+                setActiveDraftId(null);
+                setTemplateTab("author");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            />
+          </TabsContent>
+        ) : null}
+
         <TabsContent value="drafts">
           <div className="grid gap-6 xl:grid-cols-[0.8fr,1.2fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Saved draft templates</CardTitle>
-                <CardDescription>Start a new draft or resume one from the database.</CardDescription>
+                <CardDescription>
+                  Start a new draft or resume one from the database. CSV export is meant for spreadsheet review, handoff, and reuse outside the platform.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <button
@@ -310,6 +449,7 @@ export function TemplatesPage() {
                   onClick={() => {
                     setActiveDraftId(null);
                     setEditingTemplateId(null);
+                    setAiBuilderDraft(null);
                     setTemplateTab("author");
                   }}
                   type="button"
@@ -336,6 +476,7 @@ export function TemplatesPage() {
                       onClick={() => {
                         setActiveDraftId(draft.id);
                         setEditingTemplateId(null);
+                        setAiBuilderDraft(null);
                       }}
                       type="button"
                     >
@@ -355,11 +496,19 @@ export function TemplatesPage() {
                         onClick={() => {
                           setActiveDraftId(draft.id);
                           setEditingTemplateId(null);
+                          setAiBuilderDraft(null);
                           setTemplateTab("author");
                         }}
                         type="button"
                       >
                         Resume
+                      </button>
+                      <button
+                        className="text-sm font-medium text-muted-foreground"
+                        onClick={() => exportDraftTemplateCsv(draft)}
+                        type="button"
+                      >
+                        Export .csv
                       </button>
                       <button
                         className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground"
@@ -382,7 +531,9 @@ export function TemplatesPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Existing templates</CardTitle>
-                <CardDescription>Select a template to inspect its latest versions and structure.</CardDescription>
+                <CardDescription>
+                  Select a template to inspect its latest versions and structure. Exported CSV files flatten domains, questions, and levels into spreadsheet-friendly rows.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {pendingTemplateDeleteId ? (
@@ -435,12 +586,25 @@ export function TemplatesPage() {
                           setEditingTemplateId(template.id);
                           setActiveTemplateId(template.id);
                           setActiveDraftId(null);
+                          setAiBuilderDraft(null);
                           setTemplateTab("author");
                           window.scrollTo({ top: 0, behavior: "smooth" });
                         }}
                         type="button"
                       >
                         Edit
+                      </button>
+                      <button
+                        className="font-medium text-muted-foreground"
+                        onClick={async () => {
+                          const detail = activeTemplateId === template.id && templateDetailQuery.data
+                            ? templateDetailQuery.data
+                            : await api.get<TemplateDetail>(`/templates/${template.id}`);
+                          exportPublishedTemplateCsv(detail);
+                        }}
+                        type="button"
+                      >
+                        Export .csv
                       </button>
                       <button
                         className="font-medium text-muted-foreground"
@@ -459,7 +623,7 @@ export function TemplatesPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Template preview</CardTitle>
-                <CardDescription>Latest saved version details.</CardDescription>
+                <CardDescription>Latest saved version details. Use CSV export when you need a portable spreadsheet version of the template.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {templateDetailQuery.data?.versions[0] ? (
@@ -471,6 +635,13 @@ export function TemplatesPage() {
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <Badge variant="secondary">{templateDetailQuery.data.usage.totalRuns} runs use this template</Badge>
+                        <button
+                          className="rounded-full border border-border/80 bg-white px-3 py-1 text-xs font-semibold text-muted-foreground transition hover:bg-muted/40"
+                          onClick={() => exportPublishedTemplateCsv(templateDetailQuery.data)}
+                          type="button"
+                        >
+                          Export full template (.csv)
+                        </button>
                       </div>
                     </div>
                     {templateDetailQuery.data.usage.recentRuns.length ? (

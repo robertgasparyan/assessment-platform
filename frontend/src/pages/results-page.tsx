@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams } from "react-router-dom";
 import {
   PolarAngleAxis,
@@ -16,15 +16,21 @@ import {
   BarChart,
   Bar
 } from "recharts";
+import { Bot, Copy, ExternalLink, LoaderCircle, Sparkles } from "lucide-react";
 import { StatCard } from "@/components/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import type { AssessmentResults } from "@/types";
+import { downloadCsv } from "@/lib/export";
+import type { AiExecutiveSummary, AiResultsAnswer, AiStatus, AssessmentResults, ReportEmailDeliverySettings, ReportShareLink, SendReportEmailResponse } from "@/types";
+import { toast } from "sonner";
 
 type QuestionDelta = AssessmentResults["delta"]["questions"][number];
 type AnswerFilter = "all" | "low" | "commented" | "changed";
@@ -55,6 +61,16 @@ function formatDate(value: string | null | undefined) {
     day: "numeric",
     year: "numeric"
   }).format(new Date(value));
+}
+
+function truncateMiddle(value: string, maxLength = 72) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const startLength = Math.ceil((maxLength - 3) / 2);
+  const endLength = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, startLength)}...${value.slice(-endLength)}`;
 }
 
 function deltaTone(value: number | null | undefined) {
@@ -225,6 +241,15 @@ export function ResultsPage() {
   const [hoveredDomainId, setHoveredDomainId] = useState<string | null>(null);
   const [overviewFilter, setOverviewFilter] = useState<AnswerFilter>("all");
   const [compareFilter, setCompareFilter] = useState<AnswerFilter>("all");
+  const [shareExpiryDays, setShareExpiryDays] = useState("30");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [emailNote, setEmailNote] = useState("");
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isAiBriefOpen, setIsAiBriefOpen] = useState(false);
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiConversation, setAiConversation] = useState<Array<{ question: string; answer: string; supportingPoints: string[]; providerLabel: string | null }>>([]);
+  const queryClient = useQueryClient();
 
   const resultsQuery = useQuery({
     queryKey: ["assessment-results", runId, selectedComparisonRunId],
@@ -233,8 +258,122 @@ export function ResultsPage() {
         `/assessment-runs/${runId}/results${selectedComparisonRunId !== "auto" ? `?compareToRunId=${selectedComparisonRunId}` : ""}`
       )
   });
+  const shareLinksQuery = useQuery({
+    queryKey: ["assessment-share-links", runId],
+    queryFn: () => api.get<ReportShareLink[]>(`/assessment-runs/${runId}/share-links`),
+    enabled: Boolean(runId)
+  });
+  const reportEmailSettingsQuery = useQuery({
+    queryKey: ["report-email-delivery-settings"],
+    queryFn: () => api.get<ReportEmailDeliverySettings>("/settings/report-email-delivery"),
+    enabled: Boolean(runId)
+  });
+  const aiStatusQuery = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => api.get<AiStatus>("/settings/ai-status"),
+    enabled: Boolean(runId)
+  });
+  const createShareMutation = useMutation({
+    mutationFn: () =>
+      api.post<ReportShareLink>(`/assessment-runs/${runId}/share-links`, {
+        expiresInDays: shareExpiryDays === "none" ? undefined : Number(shareExpiryDays)
+      }),
+    onSuccess: async (created) => {
+      await queryClient.invalidateQueries({ queryKey: ["assessment-share-links", runId] });
+      const fullUrl = `${window.location.origin}${created.shareUrl}`;
+      await navigator.clipboard.writeText(fullUrl);
+      toast.success("Share link created and copied");
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Failed to create share link");
+    }
+  });
+  const revokeShareMutation = useMutation({
+    mutationFn: (shareId: string) => api.post(`/assessment-runs/${runId}/share-links/${shareId}/revoke`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["assessment-share-links", runId] });
+      toast.success("Share link revoked");
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Failed to revoke share link");
+    }
+  });
+  const sendReportEmailMutation = useMutation({
+    mutationFn: () =>
+      api.post<SendReportEmailResponse>(`/assessment-runs/${runId}/send-report-email`, {
+        recipientEmail,
+        recipientName,
+        note: emailNote,
+        expiresInDays: shareExpiryDays === "none" ? undefined : Number(shareExpiryDays)
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["assessment-share-links", runId] });
+      setRecipientEmail("");
+      setRecipientName("");
+      setEmailNote("");
+      setIsShareModalOpen(false);
+      toast.success("Submitted report email sent");
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Failed to send submitted report email");
+    }
+  });
+  const aiExecutiveSummaryMutation = useMutation({
+    mutationFn: (refresh?: boolean) =>
+      api.post<AiExecutiveSummary>(`/assessment-runs/${runId}/ai-executive-summary${refresh ? "?refresh=1" : ""}`),
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Failed to generate AI brief");
+    }
+  });
+  const aiAskMutation = useMutation({
+    mutationFn: (question: string) =>
+      api.post<AiResultsAnswer>(`/assessment-runs/${runId}/ai-ask`, {
+        question,
+        compareToRunId: selectedComparisonRunId !== "auto" ? selectedComparisonRunId : undefined,
+        history: aiConversation.map((item) => ({
+          question: item.question,
+          answer: item.answer
+        }))
+      }),
+    onSuccess: (data, question) => {
+      setAiConversation((current) => [...current, { question, answer: data.answer, supportingPoints: data.supportingPoints, providerLabel: data.providerLabel }]);
+      setAiQuestion("");
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Failed to ask this report");
+    }
+  });
 
   const results = resultsQuery.data;
+  const shareLinks = shareLinksQuery.data ?? [];
+  const shareLinkStats = useMemo(() => {
+    const stats = {
+      active: 0,
+      expired: 0,
+      revoked: 0
+    };
+
+    for (const link of shareLinks) {
+      const isExpired = Boolean(link.expiresAt && new Date(link.expiresAt) < new Date());
+      if (link.isRevoked) {
+        stats.revoked += 1;
+      } else if (isExpired) {
+        stats.expired += 1;
+      } else {
+        stats.active += 1;
+      }
+    }
+
+    return stats;
+  }, [shareLinks]);
+  const reportEmailUnavailableReason = !reportEmailSettingsQuery.data?.available
+    ? reportEmailSettingsQuery.data?.enabled && !reportEmailSettingsQuery.data?.configured
+      ? "Email sending is enabled, but SMTP is not fully configured by the administrator yet."
+      : "Email sending is currently disabled by the administrator."
+    : !recipientEmail.trim()
+      ? "Enter a recipient email to send the submitted report."
+      : null;
+  const aiEnabledForResults = Boolean(aiStatusQuery.data?.enabled && results?.status === "SUBMITTED");
   const radarData = results?.domains.map((domain) => ({ domain: domain.title, score: domain.averageScore ?? 0 })) ?? [];
   const distributionData = results?.distribution.levels ?? [];
   const domainBarData = results?.domains.map((domain) => ({
@@ -324,6 +463,84 @@ export function ResultsPage() {
   const printBaselineLabel =
     pageMode === "compare" && results?.previousRun ? `${results.previousRun.title} · ${results.previousRun.periodLabel}` : null;
   const backToRunState = location.state && typeof location.state === "object" ? location.state : undefined;
+
+  useEffect(() => {
+    if (!isShareModalOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsShareModalOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isShareModalOpen]);
+
+  useEffect(() => {
+    if (!isAiBriefOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAiBriefOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isAiBriefOpen]);
+
+  useEffect(() => {
+    setAiConversation([]);
+    setAiQuestion("");
+  }, [runId, selectedComparisonRunId]);
+
+  function exportResultsCsv() {
+    if (!results) {
+      return;
+    }
+
+    downloadCsv(
+      `${results.team.name}-${results.periodLabel}-results.csv`.split(" ").join("-"),
+      results.domains.flatMap((domain) =>
+        domain.questions.map((question) => ({
+          team: results.team.name,
+          assessment: results.title,
+          template: results.templateVersion.name,
+          period: results.periodLabel,
+          domain: domain.title,
+          question: question.prompt,
+          selectedLabel: question.response?.selectedLabel ?? "",
+          selectedValue: question.response?.selectedValue ?? "",
+          comment: question.response?.comment ?? ""
+        }))
+      )
+    );
+  }
+
+  function exportResultsSummaryCsv() {
+    if (!results) {
+      return;
+    }
+
+    downloadCsv(
+      `${results.team.name}-${results.periodLabel}-domain-summary.csv`.split(" ").join("-"),
+      results.domains.map((domain) => ({
+        team: results.team.name,
+        assessment: results.title,
+        template: results.templateVersion.name,
+        period: results.periodLabel,
+        domain: domain.title,
+        answeredQuestions: domain.answeredQuestions,
+        totalQuestions: domain.totalQuestions,
+        averageScore: domain.averageScore ?? ""
+      }))
+    );
+  }
 
   const filteredOverviewRows = useMemo(
     () =>
@@ -503,8 +720,29 @@ export function ResultsPage() {
         <div className="flex flex-wrap gap-3">
           <Badge variant="outline">{results?.periodType ?? "Assessment"}</Badge>
           <Badge variant="secondary">{results?.templateVersion.category ?? "Uncategorized"}</Badge>
+          {aiEnabledForResults ? (
+            <Button
+              onClick={() => {
+                setIsAiBriefOpen(true);
+                if (!aiExecutiveSummaryMutation.data && !aiExecutiveSummaryMutation.isPending) {
+                  aiExecutiveSummaryMutation.mutate(false);
+                }
+              }}
+              type="button"
+              variant="outline"
+            >
+              <Sparkles className="mr-2 h-4 w-4" />
+              AI Brief
+            </Button>
+          ) : null}
+          <Button onClick={exportResultsSummaryCsv} type="button" variant="outline">
+            Export domains (.csv)
+          </Button>
+          <Button onClick={exportResultsCsv} type="button" variant="outline">
+            Export answers (.csv)
+          </Button>
           <Button onClick={() => window.print()} type="button" variant="outline">
-            Print report
+            Export PDF
           </Button>
         </div>
       </div>
@@ -535,6 +773,60 @@ export function ResultsPage() {
           </div>
         </div>
       </div>
+
+      {results?.status === "SUBMITTED" ? (
+        <Card className="print-hidden">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Report sharing</CardTitle>
+                <CardDescription>Open the sharing workspace for secure links, expiry control, email delivery, and share history.</CardDescription>
+              </div>
+              <Button onClick={() => setIsShareModalOpen(true)} type="button">
+                Report sharing
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+              Manage secure links and email sharing from the report sharing workspace without crowding the results page.
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {aiEnabledForResults ? (
+        <Card className="print-hidden">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>AI Brief</CardTitle>
+                <CardDescription>
+                  Open an optional AI-generated executive brief without crowding the main report surface.
+                </CardDescription>
+              </div>
+              <Button
+                onClick={() => {
+                  setIsAiBriefOpen(true);
+                  if (!aiExecutiveSummaryMutation.data && !aiExecutiveSummaryMutation.isPending) {
+                    aiExecutiveSummaryMutation.mutate(false);
+                  }
+                }}
+                type="button"
+                variant="outline"
+              >
+                <Bot className="mr-2 h-4 w-4" />
+                Open AI Brief
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+              AI analysis stays in a separate slide-over so users can opt into recommendations and narrative guidance only when useful.
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="print-hidden grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard hint="Average maturity across all answered questions" label="Overall score" value={formatScore(results?.overallScore)} />
@@ -1301,6 +1593,435 @@ export function ResultsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {isShareModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-sm"
+          onClick={() => setIsShareModalOpen(false)}
+        >
+          <div
+            className="max-h-[88vh] w-full max-w-5xl overflow-y-auto rounded-[1.35rem] border border-border/80 bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-2">
+                <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">Report sharing</div>
+                <h2 className="text-lg font-semibold text-foreground">Share submitted report</h2>
+                <p className="text-sm text-muted-foreground">
+                  Create secure read-only links, choose expiry once, send by email, and manage current share history in one place.
+                </p>
+              </div>
+              <Button onClick={() => setIsShareModalOpen(false)} type="button" variant="outline">
+                Close
+              </Button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div className="grid gap-3 md:grid-cols-[220px,1fr,auto] md:items-end">
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Link expiry</div>
+                  <Select
+                    options={[
+                      { value: "7", label: "7 days" },
+                      { value: "30", label: "30 days" },
+                      { value: "90", label: "90 days" },
+                      { value: "none", label: "No expiry" }
+                    ]}
+                    value={shareExpiryDays}
+                    onChange={(event) => setShareExpiryDays(event.target.value)}
+                  />
+                </div>
+                <div className="rounded-[1rem] border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                  This expiry is used for newly created links and email-delivered report access.
+                </div>
+                <Button disabled={createShareMutation.isPending} onClick={() => createShareMutation.mutate()} type="button">
+                  {createShareMutation.isPending ? "Creating..." : "Create share link"}
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="success">Active {shareLinkStats.active}</Badge>
+                <Badge variant="secondary">Expired {shareLinkStats.expired}</Badge>
+                <Badge variant="outline">Revoked {shareLinkStats.revoked}</Badge>
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-[380px,minmax(0,1fr)]">
+                <div className="rounded-[1.1rem] border bg-white p-4">
+                  <div className="text-base font-semibold">Send by email</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    {reportEmailSettingsQuery.data?.available
+                      ? "Email a read-only submitted report link using the current expiry selection."
+                      : reportEmailSettingsQuery.data?.enabled && !reportEmailSettingsQuery.data?.configured
+                        ? "Email sending is enabled by admin, but SMTP is not fully configured yet."
+                        : "Email sending is currently disabled by admin."}
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="report-recipient-email">Recipient email</Label>
+                      <Input
+                        id="report-recipient-email"
+                        onChange={(event) => setRecipientEmail(event.target.value)}
+                        placeholder="name@example.com"
+                        type="email"
+                        value={recipientEmail}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="report-recipient-name">Recipient name</Label>
+                      <Input
+                        id="report-recipient-name"
+                        onChange={(event) => setRecipientName(event.target.value)}
+                        placeholder="Optional"
+                        value={recipientName}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    <Label htmlFor="report-email-note">Note</Label>
+                    <Textarea
+                      id="report-email-note"
+                      onChange={(event) => setEmailNote(event.target.value)}
+                      placeholder="Optional context for the recipient"
+                      rows={4}
+                      value={emailNote}
+                    />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/80 pt-3">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        Link expiry: {shareExpiryDays === "none" ? "No expiry" : `${shareExpiryDays} days`}
+                      </div>
+                      {reportEmailUnavailableReason ? (
+                        <div className="text-xs text-muted-foreground">{reportEmailUnavailableReason}</div>
+                      ) : (
+                        <div className="text-xs text-primary">Ready to send.</div>
+                      )}
+                    </div>
+                    <Button
+                      disabled={!reportEmailSettingsQuery.data?.available || !recipientEmail.trim() || sendReportEmailMutation.isPending}
+                      onClick={() => sendReportEmailMutation.mutate()}
+                      type="button"
+                    >
+                      {sendReportEmailMutation.isPending ? "Sending..." : "Send submitted report"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="rounded-[1.1rem] border bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold">Share history</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Review active, expired, and revoked links for this submitted report.</div>
+                    </div>
+                    <Badge variant="outline">{shareLinks.length} total</Badge>
+                  </div>
+
+                  <div className="mt-3 max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                    {shareLinks.length ? (
+                      shareLinks.map((link) => {
+                        const isExpired = Boolean(link.expiresAt && new Date(link.expiresAt) < new Date());
+                        const isUsable = !link.isRevoked && !isExpired;
+
+                        return (
+                          <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border bg-white px-3 py-3" key={link.id}>
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="text-sm font-medium leading-5" title={`${window.location.origin}${link.shareUrl}`}>
+                                {truncateMiddle(`${window.location.origin}${link.shareUrl}`)}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {formatDate(link.createdAt)} · {link.expiresAt ? `Expires ${formatDate(link.expiresAt)}` : "No expiry"}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant={link.isRevoked ? "secondary" : isExpired ? "secondary" : "success"}>
+                                {link.isRevoked ? "Revoked" : isExpired ? "Expired" : "Active"}
+                              </Badge>
+                              {isUsable ? (
+                                <>
+                                  <Button
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => window.open(`${window.location.origin}${link.shareUrl}`, "_blank", "noopener,noreferrer")}
+                                    type="button"
+                                    variant="outline"
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                    <span className="sr-only">Open share link</span>
+                                  </Button>
+                                  <Button
+                                    className="h-8 w-8 p-0"
+                                    onClick={async () => {
+                                      await navigator.clipboard.writeText(`${window.location.origin}${link.shareUrl}`);
+                                      toast.success("Share link copied");
+                                    }}
+                                    type="button"
+                                    variant="outline"
+                                  >
+                                    <Copy className="h-3.5 w-3.5" />
+                                    <span className="sr-only">Copy share link</span>
+                                  </Button>
+                                </>
+                              ) : null}
+                              {!link.isRevoked ? (
+                                <Button className="h-8 px-2.5 text-xs" disabled={revokeShareMutation.isPending} onClick={() => revokeShareMutation.mutate(link.id)} type="button" variant="outline">
+                                  Revoke
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                        No share links created yet.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isAiBriefOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-sm"
+          onClick={() => setIsAiBriefOpen(false)}
+        >
+          <div
+            className="h-full w-full max-w-[560px] overflow-y-auto border-l border-border/80 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="sticky top-0 z-10 border-b border-border/80 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">AI Brief</div>
+                  <h2 className="mt-1 text-xl font-semibold text-foreground">Executive AI summary</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Optional AI layer for this submitted run. Use it as supporting analysis, not as a replacement for the report itself.
+                  </p>
+                </div>
+                <Button onClick={() => setIsAiBriefOpen(false)} type="button" variant="outline">
+                  Close
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-5 px-5 py-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge variant="secondary">{results?.team.name}</Badge>
+                <Badge variant="outline">{results?.periodLabel}</Badge>
+                {aiExecutiveSummaryMutation.data?.providerLabel ? (
+                  <Badge variant="outline">{aiExecutiveSummaryMutation.data.providerLabel}</Badge>
+                ) : null}
+                <Badge variant="outline">Generated from submitted data only</Badge>
+                <Button
+                  disabled={aiExecutiveSummaryMutation.isPending}
+                  onClick={() => aiExecutiveSummaryMutation.mutate(true)}
+                  type="button"
+                  variant="outline"
+                >
+                  {aiExecutiveSummaryMutation.isPending ? "Refreshing..." : "Regenerate"}
+                </Button>
+                {aiExecutiveSummaryMutation.data ? (
+                  <Button
+                    onClick={async () => {
+                      const brief = [
+                        aiExecutiveSummaryMutation.data.headline,
+                        "",
+                        aiExecutiveSummaryMutation.data.summary,
+                        "",
+                        "Strength signals:",
+                        ...aiExecutiveSummaryMutation.data.strengths.map((item) => `- ${item}`),
+                        "",
+                        "Watchouts:",
+                        ...aiExecutiveSummaryMutation.data.watchouts.map((item) => `- ${item}`),
+                        "",
+                        "General recommendations:",
+                        ...aiExecutiveSummaryMutation.data.recommendations.map((item) => `- ${item}`),
+                        "",
+                        "Leadership brief:",
+                        aiExecutiveSummaryMutation.data.leadershipBrief
+                      ].join("\n");
+                      await navigator.clipboard.writeText(brief);
+                      toast.success("AI brief copied");
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copy brief
+                  </Button>
+                ) : null}
+              </div>
+
+              {aiExecutiveSummaryMutation.isPending && !aiExecutiveSummaryMutation.data ? (
+                <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-5">
+                  <div className="h-5 w-48 animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-full animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-11/12 animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-10/12 animate-pulse rounded-full bg-muted" />
+                </div>
+              ) : null}
+
+              {aiExecutiveSummaryMutation.data ? (
+                <>
+                  <div className="rounded-[1.35rem] border border-primary/20 bg-primary/5 p-5">
+                    <div className="text-sm font-medium text-muted-foreground">Headline</div>
+                    <div className="mt-2 text-xl font-semibold text-foreground">{aiExecutiveSummaryMutation.data.headline}</div>
+                    <p className="mt-3 text-sm leading-7 text-foreground">{aiExecutiveSummaryMutation.data.summary}</p>
+                    <div className="mt-4 rounded-xl border border-primary/15 bg-white/80 px-3 py-3 text-xs leading-6 text-muted-foreground">
+                      AI-generated summary. Verify important conclusions against the underlying report data before using it for decisions.
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-[1.25rem] border bg-white p-4">
+                      <div className="text-sm font-semibold text-foreground">Strength signals</div>
+                      <div className="mt-3 space-y-2">
+                        {aiExecutiveSummaryMutation.data.strengths.map((item, index) => (
+                          <div className="rounded-xl bg-accent/60 px-3 py-2 text-sm text-foreground" key={`ai-strength-${index}`}>
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-[1.25rem] border bg-white p-4">
+                      <div className="text-sm font-semibold text-foreground">Watchouts</div>
+                      <div className="mt-3 space-y-2">
+                        {aiExecutiveSummaryMutation.data.watchouts.map((item, index) => (
+                          <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-foreground" key={`ai-watchout-${index}`}>
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.25rem] border bg-white p-4">
+                    <div className="text-sm font-semibold text-foreground">General recommendations</div>
+                    <div className="mt-3 space-y-2">
+                      {aiExecutiveSummaryMutation.data.recommendations.map((item, index) => (
+                        <div className="rounded-xl border border-primary/15 bg-primary/5 px-3 py-3 text-sm text-foreground" key={`ai-recommendation-${index}`}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.25rem] border bg-muted/20 p-4">
+                    <div className="text-sm font-semibold text-foreground">Leadership brief</div>
+                    <p className="mt-3 text-sm leading-7 text-muted-foreground">{aiExecutiveSummaryMutation.data.leadershipBrief}</p>
+                    <div className="mt-4 text-xs text-muted-foreground">
+                      {aiExecutiveSummaryMutation.data.cached
+                        ? `Loaded from cached AI summary${aiExecutiveSummaryMutation.data.cachedAt ? ` · ${formatDate(aiExecutiveSummaryMutation.data.cachedAt)}` : ""}`
+                        : "Freshly generated for the current report context"}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Last refreshed: {aiExecutiveSummaryMutation.data.cachedAt ? formatDate(aiExecutiveSummaryMutation.data.cachedAt) : "Just now"}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.25rem] border bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-foreground">Ask this report</div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Ask a focused question about this submitted run only. Answers stay scoped to the current report and selected baseline context.
+                        </p>
+                      </div>
+                      <Badge variant="outline">Report-scoped</Badge>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      <Label htmlFor="ask-this-report">Question</Label>
+                      <Textarea
+                        id="ask-this-report"
+                        placeholder="Example: What is the biggest risk in this report, and why?"
+                        value={aiQuestion}
+                        onChange={(event) => setAiQuestion(event.target.value)}
+                      />
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          disabled={aiAskMutation.isPending || aiQuestion.trim().length < 3}
+                          onClick={() => aiAskMutation.mutate(aiQuestion.trim())}
+                          type="button"
+                        >
+                          {aiAskMutation.isPending ? (
+                            <>
+                              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                              Asking...
+                            </>
+                          ) : (
+                            <>
+                              <Bot className="mr-2 h-4 w-4" />
+                              Ask this report
+                            </>
+                          )}
+                        </Button>
+                        <div className="text-xs text-muted-foreground">
+                          Generated from submitted report data only{selectedComparisonRunId !== "auto" ? " with the current baseline selection" : ""}.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 space-y-3">
+                      {aiConversation.length ? (
+                        aiConversation.map((item, index) => (
+                          <div className="rounded-[1.1rem] border bg-muted/20 p-4" key={`ai-conversation-${index}`}>
+                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Question</div>
+                            <div className="mt-1 text-sm font-medium text-foreground">{item.question}</div>
+                            <div className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-primary">Answer</div>
+                            <div className="mt-1 text-sm leading-7 text-foreground">{item.answer}</div>
+                            {item.supportingPoints.length ? (
+                              <div className="mt-4 space-y-2">
+                                {item.supportingPoints.map((point, pointIndex) => (
+                                  <div className="rounded-xl bg-white px-3 py-2 text-sm text-muted-foreground" key={`ai-supporting-point-${index}-${pointIndex}`}>
+                                    {point}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              <Button
+                                onClick={async () => {
+                                  const text = [
+                                    `Question: ${item.question}`,
+                                    "",
+                                    `Answer: ${item.answer}`,
+                                    ...(item.supportingPoints.length ? ["", "Supporting points:", ...item.supportingPoints.map((point) => `- ${point}`)] : [])
+                                  ].join("\n");
+                                  await navigator.clipboard.writeText(text);
+                                  toast.success("AI answer copied");
+                                }}
+                                size="sm"
+                                type="button"
+                                variant="outline"
+                              >
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy answer
+                              </Button>
+                              {item.providerLabel ? <Badge variant="outline">{item.providerLabel}</Badge> : null}
+                              <Badge variant="outline">Submitted report data only</Badge>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                          No questions asked yet. Use this to get a focused answer without leaving the Results view.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <Link className="print-hidden text-sm font-medium text-primary" state={backToRunState} to={`/assessments/${runId}`}>
         Back to assessment run

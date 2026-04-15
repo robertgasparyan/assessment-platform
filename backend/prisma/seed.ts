@@ -4,11 +4,18 @@ import { hashPassword } from "../src/lib/auth.js";
 import { createTemplate } from "../src/lib/template-service.js";
 
 async function main() {
-  await prisma.adminUser.upsert({
+  const adminUser = await prisma.user.upsert({
     where: { username: "admin" },
-    update: {},
+    update: {
+      displayName: "Platform Administrator",
+      role: "ADMIN",
+      isActive: true
+    },
     create: {
+      displayName: "Platform Administrator",
       username: "admin",
+      role: "ADMIN",
+      isActive: true,
       passwordHash: hashPassword("admin")
     }
   });
@@ -27,6 +34,29 @@ async function main() {
         description: team.description
       },
       create: team
+    });
+  }
+
+  const platformTeam = await prisma.team.findUnique({
+    where: { name: "Platform Team" }
+  });
+
+  if (platformTeam) {
+    await prisma.userTeamMembership.upsert({
+      where: {
+        userId_teamId: {
+          userId: adminUser.id,
+          teamId: platformTeam.id
+        }
+      },
+      update: {
+        membershipRole: "LEAD"
+      },
+      create: {
+        userId: adminUser.id,
+        teamId: platformTeam.id,
+        membershipRole: "LEAD"
+      }
     });
   }
 

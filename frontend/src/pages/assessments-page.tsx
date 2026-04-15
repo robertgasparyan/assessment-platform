@@ -11,9 +11,10 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuth } from "@/features/auth-context";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { AssessmentPeriodType, AssessmentRunSummary, Team, TemplateSummary } from "@/types";
+import type { AssessmentPeriodType, AssessmentRunSummary, Team, TemplateSummary, UserSummary } from "@/types";
 
 type DuplicateCheckResponse = {
   periodLabel: string;
@@ -189,6 +190,7 @@ function RunTable({
 }
 
 export function AssessmentsPage() {
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const initialTab = searchParams.get("tab");
@@ -196,7 +198,7 @@ export function AssessmentsPage() {
   const [title, setTitle] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [teamId, setTeamId] = useState("");
-  const [ownerName, setOwnerName] = useState("");
+  const [ownerUserId, setOwnerUserId] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [periodType, setPeriodType] = useState<AssessmentPeriodType>("QUARTER");
   const [periodLabel, setPeriodLabel] = useState("");
@@ -209,6 +211,7 @@ export function AssessmentsPage() {
   const [search, setSearch] = useState("");
   const [teamFilter, setTeamFilter] = useState("all");
   const [templateFilter, setTemplateFilter] = useState("all");
+  const [ownerFilter, setOwnerFilter] = useState("all");
   const [periodTypeFilter, setPeriodTypeFilter] = useState("all");
   const [dueDateFilter, setDueDateFilter] = useState("all");
   const [submittedDateFrom, setSubmittedDateFrom] = useState("");
@@ -227,6 +230,10 @@ export function AssessmentsPage() {
   const templatesQuery = useQuery({
     queryKey: ["templates"],
     queryFn: () => api.get<TemplateSummary[]>("/templates")
+  });
+  const usersQuery = useQuery({
+    queryKey: ["assignable-users"],
+    queryFn: () => api.get<UserSummary[]>("/users/assignable")
   });
 
   const templateOptions = useMemo(
@@ -249,8 +256,24 @@ export function AssessmentsPage() {
     () => (teamsQuery.data ?? []).map((team) => ({ value: team.id, label: team.name })),
     [teamsQuery.data]
   );
+  const ownerOptions = useMemo(
+    () =>
+      [{ value: "", label: "No explicit owner" }].concat(
+        (usersQuery.data ?? []).map((user) => ({
+          value: user.id,
+          label: `${user.displayName} (${user.username})`
+        }))
+      ),
+    [usersQuery.data]
+  );
+  const selectedOwner = (usersQuery.data ?? []).find((candidate) => candidate.id === ownerUserId);
+  const canCreateRuns = user?.role === "ADMIN" || user?.role === "TEAM_LEAD";
 
   const selectedTemplate = (templatesQuery.data ?? []).find((template) => template.id === templateId);
+  const ownerFilterOptions = useMemo(
+    () => [{ value: "all", label: "All assignees" }, { value: "unassigned", label: "Unassigned" }, ...ownerOptions.filter((option) => option.value)],
+    [ownerOptions]
+  );
 
   const createPayload = useMemo(() => {
     const basePayload = {
@@ -258,7 +281,8 @@ export function AssessmentsPage() {
       teamId,
       templateId,
       templateVersionId: selectedTemplate?.latestVersion?.id ?? "",
-      ownerName: ownerName.trim() || undefined,
+      ownerUserId: ownerUserId || undefined,
+      ownerName: selectedOwner?.displayName || undefined,
       dueDate: dueDate ? toIsoDate(dueDate) : undefined,
       periodType,
       periodLabel: periodLabel.trim() || undefined
@@ -282,7 +306,7 @@ export function AssessmentsPage() {
       periodType,
       referenceDate: referenceDate ? toIsoDate(referenceDate) : ""
     };
-  }, [dueDate, endDate, ownerName, periodLabel, periodType, quarter, referenceDate, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, title, year]);
+  }, [dueDate, endDate, ownerUserId, periodLabel, periodType, quarter, referenceDate, selectedOwner?.displayName, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, title, year]);
 
   const periodReady =
     periodType === "QUARTER"
@@ -313,7 +337,7 @@ export function AssessmentsPage() {
       toast.success("Assessment run created");
       queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
       setTitle("");
-      setOwnerName("");
+      setOwnerUserId("");
       setDueDate("");
       setPeriodLabel("");
       setStartDate("");
@@ -370,10 +394,14 @@ export function AssessmentsPage() {
         || (run.ownerName ?? "").toLowerCase().includes(query);
       const matchesTeam = teamFilter === "all" || run.team.id === teamFilter;
       const matchesTemplate = templateFilter === "all" || run.templateVersion.name === templateFilter;
+      const matchesOwner =
+        ownerFilter === "all"
+        || (ownerFilter === "unassigned" && !run.ownerUser?.id)
+        || run.ownerUser?.id === ownerFilter;
       const matchesPeriodType = periodTypeFilter === "all" || run.periodType === periodTypeFilter;
-      return matchesSearch && matchesTeam && matchesTemplate && matchesPeriodType;
+      return matchesSearch && matchesTeam && matchesTemplate && matchesOwner && matchesPeriodType;
     });
-  }, [periodTypeFilter, runs, search, teamFilter, templateFilter]);
+  }, [ownerFilter, periodTypeFilter, runs, search, teamFilter, templateFilter]);
 
   const filteredActiveRuns = commonFilteredRuns
     .filter((run) => run.status === "DRAFT" || run.status === "IN_PROGRESS")
@@ -436,7 +464,7 @@ export function AssessmentsPage() {
   }).length;
 
   const filterBlock = (
-    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-6">
       <div className="space-y-2">
         <Label>Search runs</Label>
         <Input placeholder="Title, team, template, owner, or period" value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -456,6 +484,10 @@ export function AssessmentsPage() {
           value={templateFilter}
           onChange={(event) => setTemplateFilter(event.target.value)}
         />
+      </div>
+      <div className="space-y-2">
+        <Label>Assignee</Label>
+        <Select options={ownerFilterOptions} value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
       </div>
       <div className="space-y-2">
         <Label>Period type</Label>
@@ -489,7 +521,7 @@ export function AssessmentsPage() {
 
   const submittedFilterBlock = (
     <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <div className="space-y-2 xl:col-span-2">
           <Label>Search submitted runs</Label>
           <Input
@@ -513,6 +545,10 @@ export function AssessmentsPage() {
             value={templateFilter}
             onChange={(event) => setTemplateFilter(event.target.value)}
           />
+        </div>
+        <div className="space-y-2">
+          <Label>Assignee</Label>
+          <Select options={ownerFilterOptions} value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
         </div>
       </div>
 
@@ -559,6 +595,7 @@ export function AssessmentsPage() {
               setSearch("");
               setTeamFilter("all");
               setTemplateFilter("all");
+              setOwnerFilter("all");
               setPeriodTypeFilter("all");
               setSubmittedDateFrom("");
               setSubmittedDateTo("");
@@ -580,6 +617,13 @@ export function AssessmentsPage() {
       setPageTab(tab);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    if (!canCreateRuns && pageTab === "create") {
+      setPageTab("active");
+      setSearchParams({ tab: "active" });
+    }
+  }, [canCreateRuns, pageTab, setSearchParams]);
 
   const confirmRunAction = () => {
     if (!pendingRunAction) {
@@ -671,12 +715,13 @@ export function AssessmentsPage() {
         }}
         value={pageTab}
       >
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="create">Create</TabsTrigger>
+        <TabsList className={`grid w-full ${canCreateRuns ? "grid-cols-3" : "grid-cols-2"}`}>
+          {canCreateRuns ? <TabsTrigger value="create">Create</TabsTrigger> : null}
           <TabsTrigger value="active">Active</TabsTrigger>
           <TabsTrigger value="submitted">Submitted</TabsTrigger>
         </TabsList>
 
+        {canCreateRuns ? (
         <TabsContent className="space-y-6" value="create">
           <Card>
             <CardHeader>
@@ -708,7 +753,7 @@ export function AssessmentsPage() {
               </div>
               <div className="space-y-2">
                 <Label>Owner</Label>
-                <Input placeholder="Optional owner or coordinator" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} />
+                <Select options={ownerOptions} value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)} />
               </div>
               <div className="space-y-2">
                 <Label>Due date</Label>
@@ -805,6 +850,7 @@ export function AssessmentsPage() {
             </CardContent>
           </Card>
         </TabsContent>
+        ) : null}
 
         <TabsContent className="space-y-6" value="active">
           <Card>

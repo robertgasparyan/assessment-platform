@@ -37,6 +37,10 @@ Example:
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/assessment_platform?schema=public"
 PORT=4000
 CLIENT_URL="http://localhost:5173"
+PG_DUMP_PATH="C:\Program Files\PostgreSQL\17\bin\pg_dump.exe"
+AI_CONFIG_ENCRYPTION_KEY="replace-with-a-long-random-secret"
+OLLAMA_BASE_URL="http://192.168.1.1:11434"
+OLLAMA_MODEL="gpt-oss:20b"
 ```
 
 ### 3. Install dependencies
@@ -71,7 +75,8 @@ npm run dev
 
 The database currently stores these main entity groups:
 
-- `AdminUser`
+- `User`
+- `UserTeamMembership`
 - `Category`
 - `Team`
 - `TemplateDraft`
@@ -80,6 +85,12 @@ The database currently stores these main entity groups:
 - versioned template entities
 - `AssessmentRun`
 - assessment responses and result-related snapshot data
+- `ReportShareLink`
+- `AuditLog`
+- `Notification`
+- `PlatformSetting`
+- `AiAssessmentSummary`
+- `AiReportsBrief`
 
 ## Important Product Rules Reflected in the Data Model
 
@@ -110,12 +121,35 @@ Assessment runs currently use:
 
 ### Admin authentication
 
-- `AdminUser` stores the current simple admin login account.
+- `User` stores platform accounts.
+- `role`, `isActive`, and team memberships support the first real user-management model.
+- `mustChangePassword` supports first-login onboarding and admin-forced password resets.
+- `inviteToken` and `inviteExpiresAt` support one-time account activation links.
 - `sessionToken` and `sessionExpiresAt` are used for the current bearer-token session model.
-- Seed data creates a default admin user with:
+- Seed data creates a default administrator with:
   - username `admin`
   - password `admin`
 - The app UI no longer shows those default credentials on the login page; they are documented here and in the user/setup docs only.
+
+### Assessment ownership
+
+- `AssessmentRun.ownerUserId` stores the real assigned owner user when a run is explicitly assigned.
+- `ownerName` remains as the display snapshot returned to the UI and preserved in run metadata.
+- `AssessmentRunAssignment` stores ownership history, including who changed the assignment, the previous owner, and the next owner.
+
+### Shared reports and governance
+
+- `ReportShareLink` stores tokenized read-only access for submitted results.
+- `AuditLog` stores key governance events for users, runs, and report sharing.
+- `Notification` stores user-level in-app alerts such as assignment and submission events.
+
+### AI configuration and cache
+
+- `PlatformSetting` stores global workspace configuration, including AI provider settings.
+- Provider secrets entered through admin configuration are stored encrypted in the database.
+- `AiAssessmentSummary` stores cached AI Brief output for submitted Results runs.
+- `AiReportsBrief` stores cached AI Brief output for filtered Reports narratives.
+- If AI is disabled by admin configuration, AI surfaces should be hidden/disabled across the app.
 
 ### Current-state reporting rule
 
@@ -157,6 +191,23 @@ Typical PostgreSQL tools:
 - restore custom dump: `pg_restore`
 - restore plain SQL dump: `psql`
 
+The application now also exposes admin-only export tools under `Administration > Data Model`:
+- portable JSON export
+- full JSON export
+- PostgreSQL dump download
+
+AI administration now lives under `Administration > Configurations`:
+- global AI enable/disable
+- active provider selection
+- provider configuration and connection testing
+- optional active-provider visibility to end users
+
+If the PostgreSQL dump button is disabled, the backend could not execute `pg_dump`.
+Typical fixes:
+- install PostgreSQL client tools on the backend machine
+- add `pg_dump` to the system `PATH`
+- set `PG_DUMP_PATH` in the root `.env` to the full executable path
+
 ## Recommended Practice
 
 - Use Prisma schema changes instead of manual table edits.
@@ -164,3 +215,4 @@ Typical PostgreSQL tools:
 - Use `npm run db:push` after schema changes.
 - Use `npm run db:seed` only when you need demo/reference data.
 - Stop running backend processes on Windows if Prisma client generation hits a file lock issue.
+- Set `AI_CONFIG_ENCRYPTION_KEY` before storing provider API keys through the admin UI.

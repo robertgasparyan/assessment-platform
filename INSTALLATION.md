@@ -14,6 +14,7 @@ These guides cover:
 - running the app
 - production/live deployment basics
 - PostgreSQL export and import
+- optional AI environment configuration
 
 Shared project files:
 

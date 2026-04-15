@@ -1,6 +1,8 @@
 import { Suspense, lazy } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "@/features/auth-context";
+import { ActivateAccountPage } from "@/pages/activate-account-page";
+import { ForcePasswordChangePage } from "@/pages/force-password-change-page";
 import { AppShell } from "@/layouts/app-shell";
 import { LoginPage } from "@/pages/login-page";
 
@@ -8,8 +10,11 @@ const DashboardPage = lazy(() => import("@/pages/dashboard-page").then((module) 
 const TemplatesPage = lazy(() => import("@/pages/templates-page").then((module) => ({ default: module.TemplatesPage })));
 const LibrariesPage = lazy(() => import("@/pages/libraries-page").then((module) => ({ default: module.LibrariesPage })));
 const TeamsPage = lazy(() => import("@/pages/teams-page").then((module) => ({ default: module.TeamsPage })));
+const AdministrationPage = lazy(() => import("@/pages/administration-page").then((module) => ({ default: module.AdministrationPage })));
 const AssessmentsPage = lazy(() => import("@/pages/assessments-page").then((module) => ({ default: module.AssessmentsPage })));
+const MyAssessmentsPage = lazy(() => import("@/pages/my-assessments-page").then((module) => ({ default: module.MyAssessmentsPage })));
 const ReportsPage = lazy(() => import("@/pages/reports-page").then((module) => ({ default: module.ReportsPage })));
+const SharedResultsPage = lazy(() => import("@/pages/shared-results-page").then((module) => ({ default: module.SharedResultsPage })));
 const AssessmentRunPage = lazy(() =>
   import("@/pages/assessment-run-page").then((module) => ({ default: module.AssessmentRunPage }))
 );
@@ -39,7 +44,22 @@ function RouteFallback() {
 }
 
 export default function App() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, mustChangePassword } = useAuth();
+
+  if (window.location.pathname === "/activate-account") {
+    return <ActivateAccountPage />;
+  }
+
+  if (window.location.pathname.startsWith("/shared-results/")) {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/shared-results/:token" element={<SharedResultsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    );
+  }
 
   if (isLoading) {
     return <RouteFallback />;
@@ -47,6 +67,10 @@ export default function App() {
 
   if (!isAuthenticated) {
     return <LoginPage />;
+  }
+
+  if (mustChangePassword) {
+    return <ForcePasswordChangePage />;
   }
 
   return (
@@ -57,7 +81,11 @@ export default function App() {
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/libraries" element={<LibrariesPage />} />
           <Route path="/teams" element={<TeamsPage />} />
+          <Route path="/administration" element={<AdministrationPage />} />
+          <Route path="/users" element={<Navigate replace to="/administration?tab=users" />} />
+          <Route path="/audit-trail" element={<Navigate replace to="/administration?tab=audit" />} />
           <Route path="/assessments" element={<AssessmentsPage />} />
+          <Route path="/my-assessments" element={<MyAssessmentsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/assessments/:runId" element={<AssessmentRunPage />} />
           <Route path="/assessments/:runId/results" element={<ResultsPage />} />

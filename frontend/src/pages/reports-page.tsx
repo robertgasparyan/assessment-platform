@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { ArrowRight, BarChart3, Layers3, Search, Target } from "lucide-react";
+import { ArrowRight, BarChart3, Bot, Layers3, Search, Sparkles, Target } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +11,10 @@ import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { LatestByTeamReport, LatestByTeamReportsResponse } from "@/types";
+import { downloadCsv } from "@/lib/export";
+import { Button } from "@/components/ui/button";
+import type { AiStatus, LatestByTeamReport, LatestByTeamReportsResponse, ReportsAiBrief } from "@/types";
+import { toast } from "sonner";
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -48,10 +52,15 @@ export function ReportsPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [domainFilter, setDomainFilter] = useState("all");
   const [questionFilter, setQuestionFilter] = useState("all");
+  const [isAiBriefOpen, setIsAiBriefOpen] = useState(false);
 
   const reportsQuery = useQuery({
     queryKey: ["reports-latest-by-team"],
     queryFn: () => api.get<LatestByTeamReportsResponse>("/reports/latest-by-team")
+  });
+  const aiStatusQuery = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => api.get<AiStatus>("/settings/ai-status")
   });
 
   const data = reportsQuery.data;
@@ -239,7 +248,124 @@ export function ReportsPage() {
   );
 
   const selectedQuestionLabel = questionFilter !== "all" ? questionFilter : null;
+  const selectedDomainLabel = domainFilter !== "all" ? domainFilter : null;
   const selectionText = viewMode === "team-template" ? data?.selectionRule.latestByTeamTemplate : data?.selectionRule.latestByTeam;
+  const aiEnabledForReports = Boolean(aiStatusQuery.data?.enabled);
+
+  const aiBriefMutation = useMutation({
+    mutationFn: (refresh?: boolean) =>
+      api.post<ReportsAiBrief>(`/reports/ai-brief${refresh ? "?refresh=1" : ""}`, {
+        viewMode,
+        selectedQuestionLabel,
+        selectedDomainLabel,
+        summary: {
+          rowsCount: filteredSummary.rowsCount,
+          averageLatestScore: filteredSummary.averageLatestScore,
+          highestRowLabel: filteredSummary.highestRow
+            ? `${filteredSummary.highestRow.teamName}${viewMode === "team-template" ? ` · ${filteredSummary.highestRow.templateName}` : ""}`
+            : null,
+          mostCommonWeakestDomainTitle: filteredSummary.mostCommonWeakestDomain?.title ?? null
+        },
+        filters: {
+          search,
+          team: teamFilter,
+          template: templateFilter,
+          category: categoryFilter,
+          domain: domainFilter,
+          question: questionFilter
+        },
+        rows: filteredLatestRows.map((item) => ({
+          teamName: item.teamName,
+          templateName: item.templateName,
+          periodLabel: item.periodLabel,
+          overallScore: item.overallScore,
+          strongestDomainTitle: item.strongestDomain?.title ?? null,
+          weakestDomainTitle: item.weakestDomain?.title ?? null
+        })),
+        domainSnapshot: filteredDomainSnapshot,
+        questionSnapshot
+      }),
+    onError: (error: Error) => toast.error(error.message)
+  });
+
+  function copyAiBrief() {
+    if (!aiBriefMutation.data) {
+      return;
+    }
+
+    const sections = [
+      `Headline\n${aiBriefMutation.data.headline}`,
+      `Summary\n${aiBriefMutation.data.summary}`,
+      `Observed patterns\n${aiBriefMutation.data.patterns.map((item) => `- ${item}`).join("\n")}`,
+      `Watchouts\n${aiBriefMutation.data.risks.map((item) => `- ${item}`).join("\n")}`,
+      `General recommendations\n${aiBriefMutation.data.recommendations.map((item) => `- ${item}`).join("\n")}`,
+      `Leadership brief\n${aiBriefMutation.data.leadershipBrief}`
+    ];
+
+    void navigator.clipboard.writeText(sections.join("\n\n"));
+    toast.success("AI brief copied");
+  }
+
+  useEffect(() => {
+    if (!isAiBriefOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAiBriefOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isAiBriefOpen]);
+
+  function exportReportCsv() {
+    downloadCsv(
+      `reports-${viewMode === "team-template" ? "latest-by-team-assessment" : "latest-by-team"}.csv`,
+      filteredLatestRows.map((item) => ({
+        team: item.teamName,
+        assessment: item.title,
+        template: item.templateName,
+        category: item.templateCategory ?? "",
+        period: item.periodLabel,
+        submittedAt: item.submittedAt ?? "",
+        overallScore: item.overallScore ?? "",
+        strongestDomain: item.strongestDomain?.title ?? "",
+        weakestDomain: item.weakestDomain?.title ?? ""
+      }))
+    );
+  }
+
+  function exportDomainSnapshotCsv() {
+    downloadCsv(
+      `reports-domain-snapshot.csv`,
+      filteredDomainSnapshot.map((domain) => ({
+        domain: domain.title,
+        averageScore: domain.averageScore ?? "",
+        teamCount: domain.teamCount
+      }))
+    );
+  }
+
+  function exportQuestionSnapshotCsv() {
+    if (!selectedQuestionLabel) {
+      return;
+    }
+
+    downloadCsv(
+      `reports-question-snapshot.csv`,
+      questionSnapshot.map((item) => ({
+        team: item.teamName,
+        template: item.templateName,
+        domain: item.domainTitle,
+        question: selectedQuestionLabel,
+        selectedLabel: item.selectedLabel ?? "",
+        selectedValue: item.selectedValue ?? ""
+      }))
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -261,6 +387,43 @@ export function ReportsPage() {
               <div className="rounded-full border border-primary/20 bg-white px-4 py-2 text-foreground">
                 {viewMode === "team-template" ? "Latest per team + assessment" : "Latest overall per team"}
               </div>
+              <button
+                className="rounded-full border border-primary/20 bg-white px-4 py-2 font-medium text-foreground transition hover:bg-accent"
+                onClick={exportReportCsv}
+                type="button"
+              >
+                Export current rows (.csv)
+              </button>
+              <button
+                className="rounded-full border border-primary/20 bg-white px-4 py-2 font-medium text-foreground transition hover:bg-accent"
+                onClick={selectedQuestionLabel ? exportQuestionSnapshotCsv : exportDomainSnapshotCsv}
+                type="button"
+              >
+                {selectedQuestionLabel ? "Export question snapshot (.csv)" : "Export domain snapshot (.csv)"}
+              </button>
+              <button
+                className="rounded-full border border-primary/20 bg-white px-4 py-2 font-medium text-foreground transition hover:bg-accent"
+                onClick={() => window.print()}
+                type="button"
+              >
+                Export PDF
+              </button>
+              {aiEnabledForReports ? (
+                <Button
+                  className="rounded-full"
+                  onClick={() => {
+                    setIsAiBriefOpen(true);
+                    if (!aiBriefMutation.data && !aiBriefMutation.isPending) {
+                      aiBriefMutation.mutate(false);
+                    }
+                  }}
+                  type="button"
+                  variant="outline"
+                >
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  AI Brief
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -323,6 +486,39 @@ export function ReportsPage() {
           <div className="rounded-[1.1rem] border bg-muted/60 px-4 py-3 text-sm text-muted-foreground">{selectionText}</div>
         </CardContent>
       </Card>
+
+      {aiEnabledForReports ? (
+        <Card className="border-border bg-white/90">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>AI Brief</CardTitle>
+                <CardDescription>
+                  Optional narrative layer for the current filtered reporting view. Keep the operational table and charts primary, and open AI only when you want synthesis.
+                </CardDescription>
+              </div>
+              <Button
+                onClick={() => {
+                  setIsAiBriefOpen(true);
+                  if (!aiBriefMutation.data && !aiBriefMutation.isPending) {
+                    aiBriefMutation.mutate(false);
+                  }
+                }}
+                type="button"
+                variant="outline"
+              >
+                <Bot className="mr-2 h-4 w-4" />
+                Open AI Brief
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+              AI summarization stays separate from the reporting workspace so users can opt into narrative guidance without losing access to the raw reporting surfaces.
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card className="border-primary/20 bg-accent">
@@ -573,6 +769,126 @@ export function ReportsPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {isAiBriefOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-sm"
+          onClick={() => setIsAiBriefOpen(false)}
+        >
+          <div
+            className="h-full w-full max-w-[560px] overflow-y-auto border-l border-border/80 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="sticky top-0 z-10 border-b border-border/80 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">AI Brief</div>
+                  <h2 className="mt-1 text-xl font-semibold text-foreground">Reports narrative</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Optional AI synthesis for the current filtered reporting view. Verify conclusions against the rows, charts, and snapshots.
+                  </p>
+                </div>
+                <Button onClick={() => setIsAiBriefOpen(false)} type="button" variant="outline">
+                  Close
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-5 px-5 py-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge variant="secondary">{viewMode === "team-template" ? "Latest per team + assessment" : "Latest per team"}</Badge>
+                {selectedDomainLabel ? <Badge variant="outline">{selectedDomainLabel}</Badge> : null}
+                {selectedQuestionLabel ? <Badge variant="outline">{selectedQuestionLabel}</Badge> : null}
+                {aiBriefMutation.data?.providerLabel ? <Badge variant="outline">{aiBriefMutation.data.providerLabel}</Badge> : null}
+                <Badge variant="outline">Generated from current filtered submitted data only</Badge>
+                {aiBriefMutation.data?.cached ? (
+                  <Badge variant="outline">
+                    {aiBriefMutation.data.cachedAt ? `Loaded from cached AI brief · ${formatDate(aiBriefMutation.data.cachedAt)}` : "Loaded from cached AI brief"}
+                  </Badge>
+                ) : null}
+                {aiBriefMutation.data ? (
+                  <Button onClick={copyAiBrief} type="button" variant="outline">
+                    Copy brief
+                  </Button>
+                ) : null}
+                <Button
+                  disabled={aiBriefMutation.isPending}
+                  onClick={() => aiBriefMutation.mutate(true)}
+                  type="button"
+                  variant="outline"
+                >
+                  {aiBriefMutation.isPending ? "Refreshing..." : "Regenerate"}
+                </Button>
+              </div>
+
+              {aiBriefMutation.isPending && !aiBriefMutation.data ? (
+                <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-5">
+                  <div className="h-5 w-48 animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-full animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-11/12 animate-pulse rounded-full bg-muted" />
+                  <div className="h-4 w-10/12 animate-pulse rounded-full bg-muted" />
+                </div>
+              ) : null}
+
+              {aiBriefMutation.data ? (
+                <>
+                  <div className="rounded-[1.35rem] border border-primary/20 bg-primary/5 p-5">
+                    <div className="text-sm font-medium text-muted-foreground">Headline</div>
+                    <div className="mt-2 text-xl font-semibold text-foreground">{aiBriefMutation.data.headline}</div>
+                    <p className="mt-3 text-sm leading-7 text-foreground">{aiBriefMutation.data.summary}</p>
+                    <div className="mt-4 rounded-xl border border-primary/15 bg-white/80 px-3 py-3 text-xs leading-6 text-muted-foreground">
+                      AI-generated reporting narrative. Verify important conclusions against the current rows, charts, and snapshots before using it for decisions.
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-[1.25rem] border bg-white p-4">
+                      <div className="text-sm font-semibold text-foreground">Observed patterns</div>
+                      <div className="mt-3 space-y-2">
+                        {aiBriefMutation.data.patterns.map((item, index) => (
+                          <div className="rounded-xl bg-accent/60 px-3 py-2 text-sm text-foreground" key={`reports-pattern-${index}`}>
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-[1.25rem] border bg-white p-4">
+                      <div className="text-sm font-semibold text-foreground">Watchouts</div>
+                      <div className="mt-3 space-y-2">
+                        {aiBriefMutation.data.risks.map((item, index) => (
+                          <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-foreground" key={`reports-risk-${index}`}>
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.25rem] border bg-white p-4">
+                    <div className="text-sm font-semibold text-foreground">General recommendations</div>
+                    <div className="mt-3 space-y-2">
+                      {aiBriefMutation.data.recommendations.map((item, index) => (
+                        <div className="rounded-xl border border-primary/15 bg-primary/5 px-3 py-3 text-sm text-foreground" key={`reports-recommendation-${index}`}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.25rem] border bg-muted/20 p-4">
+                    <div className="text-sm font-semibold text-foreground">Leadership brief</div>
+                    <p className="mt-3 text-sm leading-7 text-muted-foreground">{aiBriefMutation.data.leadershipBrief}</p>
+                  </div>
+
+                  <div className="rounded-[1.1rem] border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+                    Last refreshed: {aiBriefMutation.data.cachedAt ? formatDate(aiBriefMutation.data.cachedAt) : "Just now"}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

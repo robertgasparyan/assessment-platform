@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import type { UserRole } from "@prisma/client";
 import { prisma } from "../db.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -6,6 +7,8 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 export type AuthenticatedAdmin = {
   id: string;
   username: string;
+  displayName: string;
+  role: UserRole;
 };
 
 declare global {
@@ -32,9 +35,10 @@ export async function requireAdminAuth(request: Request, response: Response, nex
     return response.status(401).json({ message: "Authentication required" });
   }
 
-  const user = await prisma.adminUser.findFirst({
+  const user = await prisma.user.findFirst({
     where: {
       sessionToken: token,
+      isActive: true,
       sessionExpiresAt: {
         gt: new Date()
       }
@@ -47,10 +51,12 @@ export async function requireAdminAuth(request: Request, response: Response, nex
 
   request.adminUser = {
     id: user.id,
-    username: user.username
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role
   };
 
-  await prisma.adminUser.update({
+  await prisma.user.update({
     where: { id: user.id },
     data: {
       sessionExpiresAt: new Date(Date.now() + SESSION_TTL_MS)
@@ -62,4 +68,18 @@ export async function requireAdminAuth(request: Request, response: Response, nex
 
 export function buildSessionExpiry() {
   return new Date(Date.now() + SESSION_TTL_MS);
+}
+
+export function requireRole(...roles: UserRole[]) {
+  return (request: Request, response: Response, next: NextFunction) => {
+    if (!request.adminUser) {
+      return response.status(401).json({ message: "Authentication required" });
+    }
+
+    if (!roles.includes(request.adminUser.role)) {
+      return response.status(403).json({ message: "You do not have permission to perform this action" });
+    }
+
+    next();
+  };
 }

@@ -17,6 +17,19 @@ Root `.env`:
 DATABASE_URL="postgresql://user:password@host:5432/assessment_platform?schema=public"
 PORT=4000
 CLIENT_URL="https://your-frontend-domain.example.com"
+PG_DUMP_PATH="/usr/bin/pg_dump"
+AI_CONFIG_ENCRYPTION_KEY="replace-with-a-long-random-secret"
+OLLAMA_BASE_URL="http://192.168.1.1:11434"
+OLLAMA_MODEL="gpt-oss:20b"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_MODEL=""
+OPENAI_API_KEY=""
+CLAUDE_BASE_URL="https://api.anthropic.com"
+CLAUDE_MODEL=""
+CLAUDE_API_KEY=""
+GEMINI_BASE_URL="https://generativelanguage.googleapis.com/v1beta"
+GEMINI_MODEL=""
+GEMINI_API_KEY=""
 ```
 
 Frontend environment:
@@ -96,11 +109,19 @@ Or:
 - templates load
 - assessments can be created
 - reports page loads submitted data
+- AI configuration page loads
+- provider connection testing works for the configured provider
+- AI-enabled Results, Reports, and Templates surfaces behave as expected
 
 ## Suggested Production Concerns
 
 - HTTPS
 - regular PostgreSQL backups
+- install PostgreSQL client tools if you want the in-app PostgreSQL dump download to work
+- set `PG_DUMP_PATH` explicitly when `pg_dump` is not on the backend process `PATH`
+- set `AI_CONFIG_ENCRYPTION_KEY` before storing provider secrets through the admin UI
+- if using Ollama in production, verify backend network access to the configured base URL
+- if using hosted providers, verify outbound network access and secret management
 - log collection
 - process restart policy
 - environment-specific `.env` management

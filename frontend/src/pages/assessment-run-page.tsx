@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { MonitorPlay, Sparkles, TimerReset } from "lucide-react";
 import { toast } from "sonner";
 import { AssessmentMatrix } from "@/components/assessment-matrix";
+import { AssessmentPresentationMode } from "@/components/assessment-presentation-mode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/features/auth-context";
 import { api } from "@/lib/api";
-import type { AssessmentRunDetail } from "@/types";
+import type { AssessmentRunDetail, UserSummary } from "@/types";
 
 type ResponseState = Record<string, { selectedValue: number; selectedLabel: string; comment?: string }>;
 
@@ -51,6 +56,7 @@ function getDueDateState(dueDate: string | null | undefined, status: AssessmentR
 }
 
 export function AssessmentRunPage() {
+  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -61,6 +67,10 @@ export function AssessmentRunPage() {
     queryKey: ["assessment-run", runId],
     queryFn: () => api.get<AssessmentRunDetail>(`/assessment-runs/${runId}`)
   });
+  const usersQuery = useQuery({
+    queryKey: ["assignable-users"],
+    queryFn: () => api.get<UserSummary[]>("/users/assignable")
+  });
 
   const [responses, setResponses] = useState<ResponseState>({});
   const [submissionSummary, setSubmissionSummary] = useState("");
@@ -68,9 +78,11 @@ export function AssessmentRunPage() {
   const [hasHydrated, setHasHydrated] = useState(false);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
   const [editTitle, setEditTitle] = useState("");
-  const [editOwnerName, setEditOwnerName] = useState("");
+  const [editOwnerUserId, setEditOwnerUserId] = useState("");
   const [editDueDate, setEditDueDate] = useState("");
   const [editPeriodLabel, setEditPeriodLabel] = useState("");
+  const [isPresentationModeOpen, setIsPresentationModeOpen] = useState(false);
+  const [presentationQuestionIndex, setPresentationQuestionIndex] = useState(0);
 
   useEffect(() => {
     if (!runQuery.data || hasHydrated) {
@@ -94,7 +106,7 @@ export function AssessmentRunPage() {
     setResponses(nextResponses);
     setSubmissionSummary(runQuery.data.submissionSummary ?? "");
     setEditTitle(runQuery.data.title);
-    setEditOwnerName(runQuery.data.ownerName ?? "");
+    setEditOwnerUserId(runQuery.data.ownerUser?.id ?? "");
     setEditDueDate(runQuery.data.dueDate ? new Date(runQuery.data.dueDate).toISOString().slice(0, 10) : "");
     setEditPeriodLabel(runQuery.data.periodLabel);
     setLastSavedSnapshot(JSON.stringify(nextResponses));
@@ -140,7 +152,8 @@ export function AssessmentRunPage() {
     mutationFn: () =>
       api.put(`/assessment-runs/${runId}`, {
         title: editTitle,
-        ownerName: editOwnerName,
+        ownerUserId: editOwnerUserId || null,
+        ownerName: selectedOwner?.displayName ?? null,
         dueDate: editDueDate ? new Date(`${editDueDate}T00:00:00.000Z`).toISOString() : null,
         periodLabel: editPeriodLabel
       }),
@@ -154,6 +167,17 @@ export function AssessmentRunPage() {
 
   const run = runQuery.data;
   const isSubmitted = run?.status === "SUBMITTED";
+  const selectedOwner = (usersQuery.data ?? []).find((candidate) => candidate.id === editOwnerUserId);
+  const ownerOptions = useMemo(
+    () =>
+      [{ value: "", label: "No explicit owner" }].concat(
+        (usersQuery.data ?? []).map((candidate) => ({
+          value: candidate.id,
+          label: `${candidate.displayName} (${candidate.username})`
+        }))
+      ),
+    [usersQuery.data]
+  );
   const totalQuestions = run?.domains.reduce((sum, domain) => sum + domain.totalQuestions, 0) ?? 0;
   const answeredQuestions = Object.keys(responses).length;
   const firstUnansweredQuestionId = useMemo(
@@ -163,12 +187,22 @@ export function AssessmentRunPage() {
         .find((question) => !responses[question.id]?.selectedValue)?.id ?? null,
     [responses, run?.domains]
   );
+  const flatQuestionIds = useMemo(
+    () => run?.domains.flatMap((domain) => domain.questions.map((question) => question.id)) ?? [],
+    [run?.domains]
+  );
   const currentSnapshot = JSON.stringify(responses);
   const hasUnsavedChanges = hasHydrated && currentSnapshot !== lastSavedSnapshot;
   const dueDateState = getDueDateState(run?.dueDate, run?.status);
+  const canManageRun = Boolean(user && run && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || run.ownerUser?.id === user.id));
+  const canEditResponses = Boolean(
+    user
+    && run
+    && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || user.role === "TEAM_MEMBER" || run.ownerUser?.id === user.id)
+  );
 
   useEffect(() => {
-    if (!hasHydrated || isSubmitted || !hasUnsavedChanges) {
+    if (!hasHydrated || isSubmitted || !canEditResponses || !hasUnsavedChanges) {
       return;
     }
 
@@ -178,7 +212,7 @@ export function AssessmentRunPage() {
     }, 1200);
 
     return () => window.clearTimeout(timeout);
-  }, [hasHydrated, hasUnsavedChanges, isSubmitted, responses]);
+  }, [canEditResponses, hasHydrated, hasUnsavedChanges, isSubmitted, responses]);
 
   const autosaveMessage =
     autosaveStatus === "saving"
@@ -199,7 +233,7 @@ export function AssessmentRunPage() {
             {run?.team.name} · {run?.periodLabel} · Template v{run?.templateVersion.versionNumber}
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-sm text-muted-foreground">
-            <span>Owner: {run?.ownerName || "-"}</span>
+            <span>Owner: {(run?.ownerUser?.displayName ?? run?.ownerName) || "-"}</span>
             <span>Due: {formatDate(run?.dueDate)}</span>
             {dueDateState ? <Badge variant={dueDateState.variant}>{dueDateState.label}</Badge> : null}
           </div>
@@ -216,6 +250,7 @@ export function AssessmentRunPage() {
         </div>
       </div>
 
+      {canManageRun ? (
       <Card>
         <CardHeader>
           <CardTitle>Run details</CardTitle>
@@ -232,13 +267,8 @@ export function AssessmentRunPage() {
             />
           </div>
           <div className="space-y-2">
-            <div className="text-sm font-medium">Owner</div>
-            <input
-              className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm"
-              disabled={isSubmitted}
-              value={editOwnerName}
-              onChange={(event) => setEditOwnerName(event.target.value)}
-            />
+            <Label>Owner</Label>
+            <Select disabled={isSubmitted} options={ownerOptions} value={editOwnerUserId} onChange={(event) => setEditOwnerUserId(event.target.value)} />
           </div>
           <div className="space-y-2">
             <div className="text-sm font-medium">Due date</div>
@@ -273,6 +303,33 @@ export function AssessmentRunPage() {
           ) : null}
         </CardContent>
       </Card>
+      ) : null}
+
+      {run?.assignmentHistory.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Assignment history</CardTitle>
+            <CardDescription>Track who changed ownership of this run and when the current assignment was set.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {run.assignmentHistory.map((entry) => (
+              <div className="rounded-[1rem] border border-border/80 p-3" key={entry.id}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium text-foreground">
+                    {(entry.fromUser?.displayName ?? entry.fromOwnerName ?? "Unassigned")}
+                    {" -> "}
+                    {(entry.toUser?.displayName ?? entry.toOwnerName ?? "Unassigned")}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{formatDate(entry.createdAt)}</div>
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Changed by {entry.assignedByUser.displayName}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -283,29 +340,93 @@ export function AssessmentRunPage() {
               : "Drafts autosave while you work. Jump to the next unanswered question any time."}
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-1 text-sm text-muted-foreground">
-            <div>
-              {answeredQuestions}/{totalQuestions} questions answered
+        <CardContent className="space-y-5">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.9fr)]">
+            <div className="rounded-[1.5rem] border border-border/80 bg-muted/25 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Assessment progress</div>
+                  <div className="text-2xl font-semibold text-foreground">
+                    {answeredQuestions}/{totalQuestions} questions answered
+                  </div>
+                  <div className="text-sm text-muted-foreground">{autosaveMessage}</div>
+                </div>
+                <div className="rounded-[1.25rem] bg-white px-4 py-3 text-right shadow-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Completion</div>
+                  <div className="mt-1 text-2xl font-semibold text-primary">
+                    {totalQuestions ? Math.round((answeredQuestions / totalQuestions) * 100) : 0}%
+                  </div>
+                </div>
+              </div>
+              <div className="mt-5 h-3 rounded-full bg-white">
+                <div
+                  className="h-3 rounded-full bg-primary transition-all"
+                  style={{ width: `${totalQuestions ? (answeredQuestions / totalQuestions) * 100 : 0}%` }}
+                />
+              </div>
             </div>
-            <div>{autosaveMessage}</div>
+
+            {!isSubmitted && canEditResponses && run ? (
+              <div className="rounded-[1.75rem] border border-primary/20 bg-gradient-to-br from-primary/10 via-[#eef8e8] to-white p-5 shadow-sm">
+                <div className="flex items-start gap-4">
+                  <div className="rounded-[1.25rem] bg-primary p-3 text-primary-foreground shadow-sm">
+                    <MonitorPlay className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                      <Sparkles className="h-4 w-4" />
+                      Collaborative workshop mode
+                    </div>
+                    <div className="text-xl font-semibold text-foreground">Presentation mode</div>
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      Open a full-screen, one-question-at-a-time view for team discussion, shared answer selection, and live note-taking.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Button onClick={() => setIsPresentationModeOpen(true)} type="button">
+                    <MonitorPlay className="mr-2 h-4 w-4" />
+                    Launch presentation mode
+                  </Button>
+                  {firstUnansweredQuestionId ? (
+                    <Button
+                      onClick={() => {
+                        const unansweredIndex = flatQuestionIds.findIndex((questionId) => questionId === firstUnansweredQuestionId);
+                        setPresentationQuestionIndex(unansweredIndex >= 0 ? unansweredIndex : 0);
+                        setIsPresentationModeOpen(true);
+                      }}
+                      type="button"
+                      variant="outline"
+                    >
+                      <TimerReset className="mr-2 h-4 w-4" />
+                      Start at next unanswered
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
+
           <div className="flex flex-wrap gap-3">
-            {!isSubmitted && firstUnansweredQuestionId ? (
+            {!isSubmitted && canEditResponses && firstUnansweredQuestionId ? (
               <Button
-                onClick={() => document.getElementById(`question-${firstUnansweredQuestionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                onClick={() => {
+                  const unansweredIndex = flatQuestionIds.findIndex((questionId) => questionId === firstUnansweredQuestionId);
+                  setPresentationQuestionIndex(unansweredIndex >= 0 ? unansweredIndex : 0);
+                  document.getElementById(`question-${firstUnansweredQuestionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
                 type="button"
                 variant="outline"
               >
                 Resume at next unanswered
               </Button>
             ) : null}
-            {!isSubmitted ? (
+            {!isSubmitted && canEditResponses ? (
               <>
                 <Button onClick={() => saveMutation.mutate(responses)} type="button" variant="secondary">
                   Save draft now
                 </Button>
-                <Button disabled={!run || answeredQuestions < totalQuestions || submitMutation.isPending} onClick={() => submitMutation.mutate()} type="button">
+                <Button disabled={!canManageRun || !run || answeredQuestions < totalQuestions || submitMutation.isPending} onClick={() => submitMutation.mutate()} type="button">
                   Submit assessment
                 </Button>
               </>
@@ -314,7 +435,7 @@ export function AssessmentRunPage() {
         </CardContent>
       </Card>
 
-      {!isSubmitted ? (
+      {!isSubmitted && canEditResponses ? (
         <Card>
           <CardHeader>
             <CardTitle>Submission summary</CardTitle>
@@ -339,7 +460,7 @@ export function AssessmentRunPage() {
 
       {run ? (
         <AssessmentMatrix
-          readOnly={isSubmitted}
+          readOnly={isSubmitted || !canEditResponses}
           run={run}
           responses={responses}
           onSelect={(questionId, selectedValue, selectedLabel) =>
@@ -369,6 +490,44 @@ export function AssessmentRunPage() {
               }
             }))
           }
+        />
+      ) : null}
+
+      {run && isPresentationModeOpen && canEditResponses ? (
+        <AssessmentPresentationMode
+          activeIndex={presentationQuestionIndex}
+          onActiveIndexChange={setPresentationQuestionIndex}
+          onClose={() => setIsPresentationModeOpen(false)}
+          onCommentChange={(questionId, comment) =>
+            setResponses((current) => ({
+              ...current,
+              [questionId]: {
+                ...current[questionId],
+                selectedValue:
+                  current[questionId]?.selectedValue ??
+                  run.domains.flatMap((domain) => domain.questions).find((question) => question.id === questionId)?.levels[0]?.value ??
+                  1,
+                selectedLabel:
+                  current[questionId]?.selectedLabel ??
+                  run.domains.flatMap((domain) => domain.questions).find((question) => question.id === questionId)?.levels[0]?.label ??
+                  "Level 1",
+                comment: comment || undefined
+              }
+            }))
+          }
+          onSelect={(questionId, selectedValue, selectedLabel) =>
+            setResponses((current) => ({
+              ...current,
+              [questionId]: {
+                ...current[questionId],
+                selectedValue,
+                selectedLabel
+              }
+            }))
+          }
+          readOnly={isSubmitted}
+          responses={responses}
+          run={run}
         />
       ) : null}
 

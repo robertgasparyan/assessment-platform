@@ -1,11 +1,48 @@
-import { AssessmentPeriodType, AssessmentRunStatus, Prisma } from "@prisma/client";
+import { AssessmentPeriodType, AssessmentRunStatus, Prisma, TeamMembershipRole, UserRole } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "./db.js";
 import { createSessionToken, hashPassword, verifyPassword } from "./lib/auth.js";
-import { requireAdminAuth, buildSessionExpiry } from "./lib/request-auth.js";
+import { requireAdminAuth, requireRole, buildSessionExpiry } from "./lib/request-auth.js";
 import { serializeAssessmentRun, serializeTemplateVersion } from "./lib/serializers.js";
+import { recordAuditLog, createNotification } from "./lib/audit.js";
+import { buildAssessmentResultsPayload } from "./lib/results.js";
+import { generateResultsQuestionAnswer, getCachedOrGenerateResultsExecutiveSummary } from "./lib/ai-results.js";
+import { getCachedOrGenerateReportsAiBrief } from "./lib/ai-reports.js";
+import {
+  generateDomainAssist,
+  generateFullTemplateDraft,
+  generateSingleDomainQuestion,
+  generateDomainQuestions,
+  generateQuestionAssist,
+  generateSingleTemplateDomain,
+  generateTemplateConsistencyReview,
+  generateTemplateDomains,
+  generateTemplateScaffold
+} from "./lib/ai-templates.js";
 import { createTemplate, deleteTemplate, updateTemplate } from "./lib/template-service.js";
+import {
+  buildJsonExport,
+  createPostgresDump,
+  getPgDumpCapability,
+  streamTempFile,
+  type JsonExportMode,
+  type PostgresDumpFormat
+} from "./lib/admin-export.js";
+import {
+  getReportEmailDeliverySettings,
+  updateSmtpConfiguration,
+  updateReportEmailDeliverySettings
+} from "./lib/platform-settings.js";
+import {
+  getAiSettingsSummary,
+  getAiStatusForUser,
+  testAiProviderConnection,
+  updateAiSettings,
+  type AiProvider
+} from "./lib/ai-settings.js";
+import { sendReportEmail } from "./lib/smtp.js";
+import { config } from "./config.js";
 
 const router = Router();
 
@@ -41,6 +78,7 @@ const quarterAssessmentRunSchema = z.object({
   teamId: z.string().min(1),
   templateId: z.string().min(1),
   templateVersionId: z.string().min(1),
+  ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
   allowDuplicate: z.boolean().optional(),
@@ -55,6 +93,7 @@ const customRangeAssessmentRunSchema = z.object({
   teamId: z.string().min(1),
   templateId: z.string().min(1),
   templateVersionId: z.string().min(1),
+  ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
   allowDuplicate: z.boolean().optional(),
@@ -69,6 +108,7 @@ const pointInTimeAssessmentRunSchema = z.object({
   teamId: z.string().min(1),
   templateId: z.string().min(1),
   templateVersionId: z.string().min(1),
+  ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
   allowDuplicate: z.boolean().optional(),
@@ -106,6 +146,7 @@ const submitAssessmentSchema = z.object({
 
 const updateAssessmentRunSchema = z.object({
   title: z.string().min(2),
+  ownerUserId: z.string().min(1).optional().nullable(),
   ownerName: z.string().trim().min(1).optional().or(z.literal("")),
   dueDate: z.string().datetime().optional().nullable(),
   periodLabel: z.string().trim().min(1).optional().or(z.literal(""))
@@ -119,6 +160,252 @@ const categorySchema = z.object({
 const teamSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional()
+});
+
+const userMembershipSchema = z.object({
+  teamId: z.string().min(1),
+  membershipRole: z.nativeEnum(TeamMembershipRole)
+});
+
+const createUserSchema = z.object({
+  displayName: z.string().min(1),
+  username: z.string().min(1),
+  email: z.string().email().optional().or(z.literal("")),
+  role: z.nativeEnum(UserRole),
+  isActive: z.boolean().optional(),
+  password: z.string().min(4).optional().or(z.literal("")),
+  mustChangePassword: z.boolean().optional(),
+  memberships: z.array(userMembershipSchema).default([])
+});
+
+const updateUserSchema = z.object({
+  displayName: z.string().min(1),
+  username: z.string().min(1),
+  email: z.string().email().optional().or(z.literal("")),
+  role: z.nativeEnum(UserRole),
+  isActive: z.boolean(),
+  mustChangePassword: z.boolean().optional(),
+  memberships: z.array(userMembershipSchema).default([])
+});
+
+const resetUserPasswordSchema = z.object({
+  newPassword: z.string().min(4)
+});
+
+const inviteUserSchema = z.object({
+  expiresInDays: z.number().int().min(1).max(30).optional()
+});
+
+const reportShareSchema = z.object({
+  expiresInDays: z.number().int().min(1).max(90).optional()
+});
+
+const resultsAiQuestionSchema = z.object({
+  question: z.string().trim().min(3),
+  compareToRunId: z.string().trim().min(1).optional(),
+  history: z
+    .array(
+      z.object({
+        question: z.string(),
+        answer: z.string()
+      })
+    )
+    .max(8)
+    .optional()
+});
+
+const reportEmailDeliverySchema = z.object({
+  enabled: z.boolean()
+});
+
+const smtpConfigurationSchema = z.object({
+  host: z.string().trim().min(1),
+  port: z.number().int().min(1).max(65535),
+  from: z.string().trim().min(1)
+});
+
+const aiProviderSchema = z.enum(["ollama", "openai", "claude", "gemini"]);
+
+const aiProviderConfigSchema = z.object({
+  enabled: z.boolean(),
+  baseUrl: z.string().trim().min(1),
+  model: z.string().trim(),
+  apiKey: z.string().optional(),
+  clearApiKey: z.boolean().optional()
+});
+
+const aiSettingsSchema = z.object({
+  enabled: z.boolean(),
+  activeProvider: aiProviderSchema,
+  showProviderToUsers: z.boolean(),
+  providers: z.object({
+    ollama: aiProviderConfigSchema,
+    openai: aiProviderConfigSchema,
+    claude: aiProviderConfigSchema,
+    gemini: aiProviderConfigSchema
+  })
+});
+
+const aiProviderTestSchema = z.object({
+  provider: aiProviderSchema,
+  config: aiProviderConfigSchema
+});
+
+const reportsAiBriefSchema = z.object({
+  viewMode: z.enum(["team", "team-template"]),
+  selectedQuestionLabel: z.string().nullable(),
+  selectedDomainLabel: z.string().nullable(),
+  summary: z.object({
+    rowsCount: z.number().int().min(0),
+    averageLatestScore: z.number().nullable(),
+    highestRowLabel: z.string().nullable(),
+    mostCommonWeakestDomainTitle: z.string().nullable()
+  }),
+  filters: z.object({
+    search: z.string(),
+    team: z.string(),
+    template: z.string(),
+    category: z.string(),
+    domain: z.string(),
+    question: z.string()
+  }),
+  rows: z.array(
+    z.object({
+      teamName: z.string(),
+      templateName: z.string(),
+      periodLabel: z.string(),
+      overallScore: z.number().nullable(),
+      strongestDomainTitle: z.string().nullable(),
+      weakestDomainTitle: z.string().nullable()
+    })
+  ),
+  domainSnapshot: z.array(
+    z.object({
+      title: z.string(),
+      averageScore: z.number().nullable(),
+      teamCount: z.number().int().min(0)
+    })
+  ),
+  questionSnapshot: z.array(
+    z.object({
+      teamName: z.string(),
+      templateName: z.string(),
+      domainTitle: z.string(),
+      selectedLabel: z.string().nullable(),
+      selectedValue: z.number().nullable()
+    })
+  )
+});
+
+const templateAiQuestionAssistSchema = z.object({
+  templateName: z.string(),
+  domainTitle: z.string(),
+  scoringLabels: z.array(z.string()),
+  prompt: z.string(),
+  guidance: z.string(),
+  levels: z.array(
+    z.object({
+      value: z.number(),
+      label: z.string(),
+      description: z.string()
+    })
+  )
+});
+
+const templateAiDomainAssistSchema = z.object({
+  templateName: z.string(),
+  domainTitle: z.string(),
+  description: z.string(),
+  questionPrompts: z.array(z.string())
+});
+
+const templateAiConsistencyReviewSchema = z.object({
+  templateName: z.string(),
+  templateDescription: z.string(),
+  category: z.string(),
+  scoringLabels: z.array(z.string()),
+  domains: z.array(
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      questions: z.array(
+        z.object({
+          prompt: z.string(),
+          guidance: z.string(),
+          levels: z.array(
+            z.object({
+              value: z.number(),
+              label: z.string(),
+              description: z.string()
+            })
+          )
+        })
+      )
+    })
+  )
+});
+
+const templateAiScaffoldSchema = z.object({
+  brief: z.string().trim().min(10),
+  category: z.string(),
+  scoringLabels: z.array(z.string()).min(2)
+});
+
+const templateAiDomainSuggestionsSchema = z.object({
+  templateName: z.string(),
+  templateDescription: z.string(),
+  category: z.string(),
+  scoringLabels: z.array(z.string()).min(2),
+  brief: z.string().trim().min(10)
+});
+
+const templateAiSingleDomainSchema = z.object({
+  templateName: z.string(),
+  templateDescription: z.string(),
+  category: z.string(),
+  scoringLabels: z.array(z.string()).min(2),
+  brief: z.string().trim().min(10),
+  existingDomainTitles: z.array(z.string())
+});
+
+const templateAiSingleQuestionSchema = z.object({
+  templateName: z.string(),
+  templateDescription: z.string(),
+  scoringLabels: z.array(z.string()).min(2),
+  domainTitle: z.string(),
+  domainDescription: z.string(),
+  brief: z.string().trim().min(10),
+  existingQuestionPrompts: z.array(z.string())
+});
+
+const templateAiDomainQuestionsSchema = z.object({
+  templateName: z.string(),
+  templateDescription: z.string(),
+  scoringLabels: z.array(z.string()).min(2),
+  domainTitle: z.string(),
+  domainDescription: z.string(),
+  brief: z.string().trim().min(10)
+});
+
+const templateAiFullDraftSchema = z.object({
+  brief: z.string().trim().min(10),
+  category: z.string(),
+  scoringLabels: z.array(z.string()).min(2)
+});
+
+const sendReportEmailSchema = z.object({
+  recipientEmail: z.string().email(),
+  recipientName: z.string().trim().max(120).optional().or(z.literal("")),
+  note: z.string().trim().max(1500).optional().or(z.literal("")),
+  expiresInDays: z.number().int().min(1).max(90).optional()
+});
+
+const jsonExportSchema = z.object({
+  mode: z.enum(["portable", "full"]).default("portable")
+});
+
+const postgresDumpSchema = z.object({
+  format: z.enum(["plain", "custom"]).default("custom")
 });
 
 const levelSchema = z.object({
@@ -147,6 +434,11 @@ const loginSchema = z.object({
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
+  newPassword: z.string().min(4)
+});
+
+const activateAccountSchema = z.object({
+  token: z.string().min(1),
   newPassword: z.string().min(4)
 });
 
@@ -204,6 +496,106 @@ function serializeTemplateDraft(draft: {
     ...((draft.draftData as object) ?? {}),
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt
+  };
+}
+
+function serializeUser(user: {
+  id: string;
+  displayName: string;
+  username: string;
+  email: string | null;
+  role: UserRole;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  teamMemberships?: Array<{
+    id: string;
+    membershipRole: TeamMembershipRole;
+    team: {
+      id: string;
+      name: string;
+      description: string | null;
+    };
+  }>;
+}) {
+  return {
+    id: user.id,
+    displayName: user.displayName,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    isActive: user.isActive,
+    mustChangePassword: user.mustChangePassword,
+    lastLoginAt: user.lastLoginAt,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    teams: (user.teamMemberships ?? []).map((membership) => ({
+      id: membership.team.id,
+      name: membership.team.name,
+      description: membership.team.description,
+      membershipRole: membership.membershipRole
+    }))
+  };
+}
+
+function serializeAssessmentRunSummary(run: {
+  id: string;
+  title: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
+  dueDate: Date | null;
+  periodType: AssessmentPeriodType;
+  periodLabel: string;
+  periodBucket: string;
+  status: AssessmentRunStatus;
+  overallScore: number | null;
+  submissionSummary: string | null;
+  submittedAt: Date | null;
+  updatedAt: Date;
+  team: {
+    id: string;
+    name: string;
+    description: string | null;
+    createdAt?: Date;
+    updatedAt?: Date;
+  };
+  templateVersion: {
+    id?: string;
+    name: string;
+    versionNumber: number;
+  };
+  templateVersionId?: string;
+}) {
+  return {
+    id: run.id,
+    title: run.title,
+    ownerUser: run.ownerUserId
+      ? {
+          id: run.ownerUserId
+        }
+      : null,
+    ownerName: run.ownerName,
+    dueDate: run.dueDate,
+    periodType: run.periodType,
+    periodLabel: run.periodLabel,
+    periodBucket: run.periodBucket,
+    status: run.status,
+    overallScore: run.overallScore,
+    submittedAt: run.submittedAt,
+    submissionSummary: run.submissionSummary,
+    updatedAt: run.updatedAt,
+    team: {
+      id: run.team.id,
+      name: run.team.name,
+      description: run.team.description ?? undefined
+    },
+    templateVersion: {
+      id: run.templateVersionId ?? run.templateVersion.id ?? "",
+      name: run.templateVersion.name,
+      versionNumber: run.templateVersion.versionNumber
+    }
   };
 }
 
@@ -284,8 +676,263 @@ async function findDuplicateRuns(input: z.infer<typeof assessmentRunSchema>) {
   });
 }
 
+type SessionUser = NonNullable<Express.Request["adminUser"]>;
+
+const templateManagerRoles = new Set<UserRole>([UserRole.ADMIN, UserRole.TEMPLATE_MANAGER]);
+const assessmentManagerRoles = new Set<UserRole>([UserRole.ADMIN, UserRole.TEAM_LEAD]);
+
+async function getUserTeamIds(userId: string) {
+  const memberships = await prisma.userTeamMembership.findMany({
+    where: { userId },
+    select: { teamId: true }
+  });
+
+  return memberships.map((membership) => membership.teamId);
+}
+
+async function canAccessAssessmentRun(user: SessionUser, runId: string) {
+  if (user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER) {
+    return true;
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      teamId: true,
+      ownerUserId: true,
+      status: true
+    }
+  });
+
+  if (!run) {
+    return false;
+  }
+
+  if (user.role === UserRole.VIEWER && run.status !== AssessmentRunStatus.SUBMITTED) {
+    return false;
+  }
+
+  if (run.ownerUserId === user.id) {
+    return true;
+  }
+
+  const teamIds = await getUserTeamIds(user.id);
+  return teamIds.includes(run.teamId);
+}
+
+async function canManageAssessmentRun(user: SessionUser, runId: string) {
+  if (user.role === UserRole.ADMIN) {
+    return true;
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      teamId: true,
+      ownerUserId: true,
+      status: true
+    }
+  });
+
+  if (!run || run.status === AssessmentRunStatus.SUBMITTED) {
+    return false;
+  }
+
+  if (run.ownerUserId === user.id) {
+    return true;
+  }
+
+  if (user.role === UserRole.TEAM_LEAD) {
+    const teamIds = await getUserTeamIds(user.id);
+    return teamIds.includes(run.teamId);
+  }
+
+  return false;
+}
+
+async function canEditAssessmentResponses(user: SessionUser, runId: string) {
+  if (user.role === UserRole.ADMIN) {
+    return true;
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      teamId: true,
+      ownerUserId: true,
+      status: true
+    }
+  });
+
+  if (!run || run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return false;
+  }
+
+  if (run.ownerUserId === user.id) {
+    return true;
+  }
+
+  if (user.role === UserRole.TEAM_LEAD || user.role === UserRole.TEAM_MEMBER) {
+    const teamIds = await getUserTeamIds(user.id);
+    return teamIds.includes(run.teamId);
+  }
+
+  return false;
+}
+
+async function canCreateAssessmentForTeam(user: SessionUser, teamId: string) {
+  if (user.role === UserRole.ADMIN) {
+    return true;
+  }
+
+  if (!assessmentManagerRoles.has(user.role)) {
+    return false;
+  }
+
+  const teamIds = await getUserTeamIds(user.id);
+  return teamIds.includes(teamId);
+}
+
 function roundDelta(value: number | null) {
   return typeof value === "number" ? Number(value.toFixed(2)) : null;
+}
+
+function createInviteToken() {
+  return createSessionToken();
+}
+
+function createShareToken() {
+  return createSessionToken();
+}
+
+function buildShareUrl(token: string) {
+  return `${config.clientUrl.replace(/\/$/, "")}/shared-results/${token}`;
+}
+
+function serializeReportEmailDeliverySettings(
+  settings: Awaited<ReturnType<typeof getReportEmailDeliverySettings>>,
+  includeSmtpDetails = false
+) {
+  return {
+    ...settings,
+    ...(includeSmtpDetails ? { smtp: settings.smtp } : {})
+  };
+}
+
+function buildReportEmailBody({
+  runTitle,
+  teamName,
+  periodLabel,
+  templateName,
+  overallScore,
+  senderName,
+  shareUrl,
+  note,
+  expiresAt
+}: {
+  runTitle: string;
+  teamName: string;
+  periodLabel: string;
+  templateName: string;
+  overallScore: number | null;
+  senderName: string;
+  shareUrl: string;
+  note?: string;
+  expiresAt: Date | null;
+}) {
+  const lines = [
+    `${senderName} shared a submitted assessment report with you.`,
+    "",
+    `Assessment: ${runTitle}`,
+    `Team: ${teamName}`,
+    `Period: ${periodLabel}`,
+    `Template: ${templateName}`,
+    `Overall score: ${typeof overallScore === "number" ? overallScore.toFixed(2) : "-"}`,
+    expiresAt ? `Link expires: ${formatDateLabel(expiresAt)}` : "Link expires: Never",
+    "",
+    "Open report:",
+    shareUrl
+  ];
+
+  const trimmedNote = note?.trim();
+  if (trimmedNote) {
+    lines.splice(1, 0, "Sender note:", trimmedNote, "");
+  }
+
+  return lines.join("\n");
+}
+
+async function recordAssignmentChange({
+  assessmentRunId,
+  assignedByUserId,
+  fromUserId,
+  toUserId,
+  fromOwnerName,
+  toOwnerName
+}: {
+  assessmentRunId: string;
+  assignedByUserId: string;
+  fromUserId?: string | null;
+  toUserId?: string | null;
+  fromOwnerName?: string | null;
+  toOwnerName?: string | null;
+}) {
+  const normalizedFromName = fromOwnerName?.trim() || null;
+  const normalizedToName = toOwnerName?.trim() || null;
+  if (fromUserId === toUserId && normalizedFromName === normalizedToName) {
+    return;
+  }
+
+  await prisma.assessmentRunAssignment.create({
+    data: {
+      assessmentRunId,
+      assignedByUserId,
+      fromUserId: fromUserId ?? null,
+      toUserId: toUserId ?? null,
+      fromOwnerName: normalizedFromName,
+      toOwnerName: normalizedToName
+    }
+  });
+}
+
+async function createRunNotification({
+  runId,
+  userId,
+  type,
+  title,
+  message
+}: {
+  runId: string;
+  userId?: string | null;
+  type: string;
+  title: string;
+  message: string;
+}) {
+  if (!userId) {
+    return;
+  }
+
+  await createNotification({
+    userId,
+    assessmentRunId: runId,
+    type,
+    title,
+    message,
+    linkUrl: `/assessments/${runId}`
+  });
+}
+
+async function logAudit(input: {
+  actorUserId?: string | null;
+  assessmentRunId?: string | null;
+  entityType: string;
+  entityId: string;
+  action: string;
+  summary: string;
+  metadata?: unknown;
+}) {
+  await recordAuditLog(input);
 }
 
 async function buildQuestionLibraryUsage() {
@@ -421,6 +1068,7 @@ async function getLatestSubmittedRunsByTeam() {
     },
     include: {
       team: true,
+      ownerUser: true,
       templateVersion: {
         include: {
           domains: {
@@ -457,6 +1105,7 @@ async function getLatestSubmittedRunsByTeamTemplate() {
     },
     include: {
       team: true,
+      ownerUser: true,
       templateVersion: {
         include: {
           domains: {
@@ -493,36 +1142,237 @@ router.get("/health", async (_request, response) => {
 
 router.post("/auth/login", async (request, response) => {
   const input = loginSchema.parse(request.body);
-  const user = await prisma.adminUser.findUnique({
+  const user = await prisma.user.findUnique({
     where: { username: input.username }
   });
 
-  if (!user || !verifyPassword(input.password, user.passwordHash)) {
+  if (!user || !user.isActive || !verifyPassword(input.password, user.passwordHash)) {
     return response.status(401).json({ message: "Invalid username or password" });
   }
 
   const sessionToken = createSessionToken();
   const sessionExpiresAt = buildSessionExpiry();
 
-  await prisma.adminUser.update({
+  await prisma.user.update({
     where: { id: user.id },
     data: {
       sessionToken,
-      sessionExpiresAt
+      sessionExpiresAt,
+      lastLoginAt: new Date()
     }
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    entityType: "user",
+    entityId: user.id,
+    action: "auth.login",
+    summary: `${user.displayName} logged in`
   });
 
   response.json({
     token: sessionToken,
     user: {
       id: user.id,
-      username: user.username
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role
     },
+    mustChangePassword: user.mustChangePassword,
     sessionExpiresAt
   });
 });
 
+router.post("/auth/activate-account", async (request, response) => {
+  const input = activateAccountSchema.parse(request.body);
+  const user = await prisma.user.findFirst({
+    where: {
+      inviteToken: input.token,
+      inviteExpiresAt: {
+        gt: new Date()
+      },
+      isActive: true
+    }
+  });
+
+  if (!user) {
+    return response.status(400).json({ message: "Invitation link is invalid or expired" });
+  }
+
+  const sessionToken = createSessionToken();
+  const sessionExpiresAt = buildSessionExpiry();
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      passwordHash: hashPassword(input.newPassword),
+      mustChangePassword: false,
+      inviteToken: null,
+      inviteExpiresAt: null,
+      sessionToken,
+      sessionExpiresAt,
+      lastLoginAt: new Date()
+    }
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    entityType: "user",
+    entityId: user.id,
+    action: "auth.activate",
+    summary: `${user.displayName} activated their account`
+  });
+
+  response.json({
+    token: sessionToken,
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role
+    },
+    mustChangePassword: false,
+    sessionExpiresAt
+  });
+});
+
+router.get("/shared-results/:token", async (request, response) => {
+  const shareLink = await prisma.reportShareLink.findFirst({
+    where: {
+      token: String(request.params.token),
+      isRevoked: false,
+      assessmentRun: {
+        status: AssessmentRunStatus.SUBMITTED
+      },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
+    },
+    include: {
+      assessmentRun: {
+        select: {
+          id: true
+        }
+      }
+    }
+  });
+
+  if (!shareLink) {
+    return response.status(404).json({ message: "Shared report is invalid or expired" });
+  }
+
+  const payload = await buildAssessmentResultsPayload(shareLink.assessmentRun.id);
+  if (!payload) {
+    return response.status(404).json({ message: "Assessment results not found" });
+  }
+
+  response.json({
+    ...payload,
+    sharedView: {
+      token: shareLink.token,
+      expiresAt: shareLink.expiresAt,
+      createdAt: shareLink.createdAt
+    }
+  });
+});
+
 router.use(requireAdminAuth);
+
+router.get("/admin/export-options", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const capability = await getPgDumpCapability();
+
+  response.json({
+    json: {
+      modes: [
+        {
+          value: "portable" satisfies JsonExportMode,
+          label: "Portable JSON",
+          description: "Redacts password hashes, active session tokens, invite tokens, and report share tokens."
+        },
+        {
+          value: "full" satisfies JsonExportMode,
+          label: "Full JSON",
+          description: "Includes sensitive authentication and access data. Handle as a privileged backup."
+        }
+      ]
+    },
+    postgres: {
+      available: capability.available,
+      executable: capability.executable,
+      version: capability.version,
+      checkedAt: capability.checkedAt,
+      error: capability.error,
+      formats: [
+        {
+          value: "custom" satisfies PostgresDumpFormat,
+          label: "Custom dump (.dump)",
+          description: "Best for pg_restore and full-fidelity PostgreSQL backup workflows."
+        },
+        {
+          value: "plain" satisfies PostgresDumpFormat,
+          label: "Plain SQL (.sql)",
+          description: "Portable SQL script export for PostgreSQL-compatible restore workflows."
+        }
+      ]
+    }
+  });
+});
+
+router.post("/admin/exports/json", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = jsonExportSchema.parse(request.body ?? {});
+  const exported = await buildJsonExport({
+    mode: input.mode,
+    actorUserId: request.adminUser!.id
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "system_export",
+    entityId: `json:${input.mode}`,
+    action: "admin.export_json",
+    summary: `${request.adminUser!.displayName} exported ${input.mode} JSON backup data`,
+    metadata: {
+      mode: input.mode,
+      filename: exported.filename
+    }
+  });
+
+  response.setHeader("Content-Type", exported.mimeType);
+  response.setHeader("Content-Disposition", `attachment; filename="${exported.filename}"`);
+  response.setHeader("Cache-Control", "no-store");
+  response.send(exported.content);
+});
+
+router.post("/admin/exports/postgres-dump", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = postgresDumpSchema.parse(request.body ?? {});
+  const dump = await createPostgresDump({
+    format: input.format
+  });
+
+  const cleanup = async () => {
+    await dump.cleanup();
+  };
+
+  response.on("finish", cleanup);
+  response.on("close", cleanup);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "system_export",
+    entityId: `postgres:${input.format}`,
+    action: "admin.export_postgres_dump",
+    summary: `${request.adminUser!.displayName} exported PostgreSQL dump data`,
+    metadata: {
+      format: input.format,
+      filename: dump.filename
+    }
+  });
+
+  streamTempFile({
+    tempPath: dump.tempPath,
+    filename: dump.filename,
+    mimeType: dump.mimeType,
+    response
+  });
+});
 
 router.get("/auth/me", async (request, response) => {
   response.json({
@@ -530,17 +1380,108 @@ router.get("/auth/me", async (request, response) => {
   });
 });
 
+router.get("/settings/report-email-delivery", async (request, response) => {
+  const settings = await getReportEmailDeliverySettings();
+  response.json(serializeReportEmailDeliverySettings(settings, request.adminUser?.role === UserRole.ADMIN));
+});
+
+router.get("/settings/ai-status", async (_request, response) => {
+  response.json(await getAiStatusForUser());
+});
+
+router.get("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (_request, response) => {
+  response.json(await getAiSettingsSummary());
+});
+
+router.put("/settings/report-email-delivery", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = reportEmailDeliverySchema.parse(request.body ?? {});
+  const settings = await updateReportEmailDeliverySettings(input.enabled);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "report_email_delivery",
+    action: "platform_setting.report_email_delivery_updated",
+    summary: `${request.adminUser!.displayName} ${input.enabled ? "enabled" : "disabled"} submitted report email delivery`,
+    metadata: {
+      enabled: input.enabled
+    }
+  });
+
+  response.json(serializeReportEmailDeliverySettings(settings, true));
+});
+
+router.put("/settings/smtp-configuration", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = smtpConfigurationSchema.parse(request.body ?? {});
+  const settings = await updateSmtpConfiguration({
+    host: input.host,
+    port: input.port,
+    from: input.from
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "smtp_configuration",
+    action: "platform_setting.smtp_configuration_updated",
+    summary: `${request.adminUser!.displayName} updated SMTP host/port configuration`,
+    metadata: {
+      host: input.host,
+      port: input.port,
+      from: input.from
+    }
+  });
+
+  response.json(serializeReportEmailDeliverySettings(settings, true));
+});
+
+router.put("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = aiSettingsSchema.parse(request.body ?? {});
+  const settings = await updateAiSettings(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "ai_configuration",
+    action: "platform_setting.ai_configuration_updated",
+    summary: `${request.adminUser!.displayName} updated AI configuration`,
+    metadata: {
+      enabled: settings.enabled,
+      activeProvider: settings.activeProvider,
+      showProviderToUsers: settings.showProviderToUsers,
+      providerStates: Object.fromEntries(
+        (Object.keys(settings.providers) as AiProvider[]).map((provider) => [provider, settings.providers[provider].enabled])
+      )
+    }
+  });
+
+  response.json(settings);
+});
+
+router.post("/settings/ai-configuration/test", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = aiProviderTestSchema.parse(request.body ?? {});
+  response.json(await testAiProviderConnection(input));
+});
+
 router.post("/auth/logout", async (request, response) => {
   if (!request.adminUser) {
     return response.status(401).json({ message: "Authentication required" });
   }
 
-  await prisma.adminUser.update({
+  await prisma.user.update({
     where: { id: request.adminUser.id },
     data: {
       sessionToken: null,
       sessionExpiresAt: null
     }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser.id,
+    entityType: "user",
+    entityId: request.adminUser.id,
+    action: "auth.logout",
+    summary: `${request.adminUser.displayName} logged out`
   });
 
   response.json({ ok: true });
@@ -553,7 +1494,7 @@ router.post("/auth/change-password", async (request, response) => {
     return response.status(401).json({ message: "Authentication required" });
   }
 
-  const user = await prisma.adminUser.findUnique({
+  const user = await prisma.user.findUnique({
     where: { id: request.adminUser.id }
   });
 
@@ -565,33 +1506,418 @@ router.post("/auth/change-password", async (request, response) => {
   const sessionToken = createSessionToken();
   const sessionExpiresAt = buildSessionExpiry();
 
-  await prisma.adminUser.update({
+  await prisma.user.update({
     where: { id: user.id },
     data: {
       passwordHash: updatedPasswordHash,
+      mustChangePassword: false,
       sessionToken,
       sessionExpiresAt
     }
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    entityType: "user",
+    entityId: user.id,
+    action: "user.password_changed",
+    summary: `${user.displayName} changed their password`
   });
 
   response.json({
     token: sessionToken,
     user: {
       id: user.id,
-      username: user.username
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role
     },
+    mustChangePassword: false,
     sessionExpiresAt
   });
 });
 
-router.get("/teams", async (_request, response) => {
+router.get("/notifications", async (request, response) => {
+  const user = request.adminUser!;
+  const persisted = await prisma.notification.findMany({
+    where: {
+      userId: user.id
+    },
+    orderBy: {
+      createdAt: "desc"
+    },
+    take: 20
+  });
+
+  const dueRuns = await prisma.assessmentRun.findMany({
+    where: {
+      ownerUserId: user.id,
+      status: {
+        in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS]
+      },
+      dueDate: {
+        not: null
+      }
+    },
+    include: {
+      team: true
+    },
+    orderBy: {
+      dueDate: "asc"
+    },
+    take: 10
+  });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const computed = dueRuns.flatMap((run) => {
+    if (!run.dueDate) {
+      return [];
+    }
+
+    const diffDays = Math.ceil((run.dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays < 0) {
+      return [
+        {
+          id: `due-overdue-${run.id}`,
+          type: "DUE_OVERDUE",
+          title: "Assessment overdue",
+          message: `${run.title} for ${run.team.name} is overdue.`,
+          linkUrl: `/assessments/${run.id}`,
+          isRead: false,
+          createdAt: run.dueDate,
+          readAt: null
+        }
+      ];
+    }
+
+    if (diffDays <= 3) {
+      return [
+        {
+          id: `due-soon-${run.id}`,
+          type: "DUE_SOON",
+          title: "Assessment due soon",
+          message: `${run.title} for ${run.team.name} is due in ${diffDays} day${diffDays === 1 ? "" : "s"}.`,
+          linkUrl: `/assessments/${run.id}`,
+          isRead: false,
+          createdAt: run.dueDate,
+          readAt: null
+        }
+      ];
+    }
+
+    return [];
+  });
+
+  response.json({
+    unreadCount: persisted.filter((item) => !item.isRead).length + computed.length,
+    items: [...computed, ...persisted]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((item) => ({
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        message: item.message,
+        linkUrl: item.linkUrl,
+        isRead: item.isRead,
+        createdAt: item.createdAt,
+        readAt: item.readAt ?? null
+      }))
+  });
+});
+
+router.post("/notifications/:id/read", async (request, response) => {
+  const notificationId = String(request.params.id);
+  if (notificationId.startsWith("due-")) {
+    return response.json({ ok: true });
+  }
+
+  await prisma.notification.updateMany({
+    where: {
+      id: notificationId,
+      userId: request.adminUser!.id
+    },
+    data: {
+      isRead: true,
+      readAt: new Date()
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.post("/notifications/read-all", async (request, response) => {
+  await prisma.notification.updateMany({
+    where: {
+      userId: request.adminUser!.id,
+      isRead: false
+    },
+    data: {
+      isRead: true,
+      readAt: new Date()
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.get("/audit-logs", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const logs = await prisma.auditLog.findMany({
+    include: {
+      actorUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      }
+    },
+    orderBy: {
+      createdAt: "desc"
+    },
+    take: 200
+  });
+
+  response.json(
+    logs.map((log) => ({
+      id: log.id,
+      entityType: log.entityType,
+      entityId: log.entityId,
+      action: log.action,
+      summary: log.summary,
+      metadata: log.metadata,
+      createdAt: log.createdAt,
+      actorUser: log.actorUser
+    }))
+  );
+});
+
+router.get("/users", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const users = await prisma.user.findMany({
+    include: {
+      teamMemberships: {
+        include: {
+          team: true
+        }
+      }
+    },
+    orderBy: [{ role: "asc" }, { displayName: "asc" }]
+  });
+
+  response.json(users.map(serializeUser));
+});
+
+router.get("/users/assignable", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
+  const users = await prisma.user.findMany({
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? { isActive: true }
+        : {
+            isActive: true,
+            OR: [
+              { id: user.id },
+              {
+                teamMemberships: {
+                  some: {
+                    teamId: {
+                      in: teamIds
+                    }
+                  }
+                }
+              }
+            ]
+          },
+    include: {
+      teamMemberships: {
+        include: {
+          team: true
+        }
+      }
+    },
+    orderBy: [{ displayName: "asc" }]
+  });
+
+  response.json(users.map(serializeUser));
+});
+
+router.post("/users", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = createUserSchema.parse(request.body);
+  const initialPassword = input.password?.trim() ? input.password.trim() : createSessionToken().slice(0, 16);
+  const created = await prisma.user.create({
+    data: {
+      displayName: input.displayName.trim(),
+      username: input.username.trim(),
+      email: input.email?.trim() || null,
+      role: input.role,
+      isActive: input.isActive ?? true,
+      mustChangePassword: input.mustChangePassword ?? true,
+      passwordHash: hashPassword(initialPassword),
+      teamMemberships: {
+        create: input.memberships.map((membership) => ({
+          teamId: membership.teamId,
+          membershipRole: membership.membershipRole
+        }))
+      }
+    },
+    include: {
+      teamMemberships: {
+        include: {
+          team: true
+        }
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "user",
+    entityId: created.id,
+    action: "user.created",
+    summary: `${request.adminUser!.displayName} created user ${created.displayName}`,
+    metadata: {
+      role: created.role
+    }
+  });
+
+  response.status(201).json(serializeUser(created));
+});
+
+router.post("/users/:id/invite", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = inviteUserSchema.parse(request.body);
+  const userId = String(request.params.id);
+  const inviteToken = createInviteToken();
+  const inviteExpiresAt = new Date(Date.now() + (input.expiresInDays ?? 7) * 24 * 60 * 60 * 1000);
+
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      inviteToken,
+      inviteExpiresAt,
+      mustChangePassword: true
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "user",
+    entityId: updated.id,
+    action: "user.invite_generated",
+    summary: `${request.adminUser!.displayName} generated an activation link for ${updated.displayName}`
+  });
+
+  response.json({
+    userId: updated.id,
+    inviteToken,
+    inviteExpiresAt
+  });
+});
+
+router.put("/users/:id", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = updateUserSchema.parse(request.body);
+  const userId = String(request.params.id);
+  const updated = await prisma.$transaction(async (transaction) => {
+    await transaction.userTeamMembership.deleteMany({
+      where: { userId }
+    });
+
+    return transaction.user.update({
+      where: { id: userId },
+      data: {
+        displayName: input.displayName.trim(),
+        username: input.username.trim(),
+        email: input.email?.trim() || null,
+        role: input.role,
+        isActive: input.isActive,
+        mustChangePassword: input.mustChangePassword ?? false,
+        sessionToken: input.isActive ? undefined : null,
+        sessionExpiresAt: input.isActive ? undefined : null,
+        teamMemberships: {
+          create: input.memberships.map((membership) => ({
+            teamId: membership.teamId,
+            membershipRole: membership.membershipRole
+          }))
+        }
+      },
+      include: {
+        teamMemberships: {
+          include: {
+            team: true
+          }
+        }
+      }
+    });
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "user",
+    entityId: updated.id,
+    action: "user.updated",
+    summary: `${request.adminUser!.displayName} updated user ${updated.displayName}`,
+    metadata: {
+      role: updated.role,
+      isActive: updated.isActive
+    }
+  });
+
+  response.json(serializeUser(updated));
+});
+
+router.post("/users/:id/reset-password", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = resetUserPasswordSchema.parse(request.body);
+  const userId = String(request.params.id);
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      passwordHash: hashPassword(input.newPassword),
+      mustChangePassword: true,
+      sessionToken: null,
+      sessionExpiresAt: null
+    },
+    select: {
+      id: true,
+      displayName: true,
+      username: true
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "user",
+    entityId: updated.id,
+    action: "user.password_reset",
+    summary: `${request.adminUser!.displayName} reset the password for ${updated.displayName}`
+  });
+
+  response.json({
+    message: "Password reset",
+    user: updated
+  });
+});
+
+router.get("/teams", async (request, response) => {
+  const user = request.adminUser!;
   const teams = await prisma.team.findMany({
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? undefined
+        : {
+            memberships: {
+              some: {
+                userId: user.id
+              }
+            }
+          },
     orderBy: { name: "asc" }
   });
   response.json(teams);
 });
 
-router.post("/teams", async (request, response) => {
+router.post("/teams", requireRole(UserRole.ADMIN), async (request, response) => {
   const input = teamSchema.parse(request.body);
   const created = await prisma.team.create({
     data: {
@@ -602,10 +1928,10 @@ router.post("/teams", async (request, response) => {
   response.status(201).json(created);
 });
 
-router.put("/teams/:id", async (request, response) => {
+router.put("/teams/:id", requireRole(UserRole.ADMIN), async (request, response) => {
   const input = teamSchema.parse(request.body);
   const updated = await prisma.team.update({
-    where: { id: request.params.id },
+    where: { id: String(request.params.id) },
     data: {
       name: input.name,
       description: input.description
@@ -614,21 +1940,21 @@ router.put("/teams/:id", async (request, response) => {
   response.json(updated);
 });
 
-router.delete("/teams/:id", async (request, response) => {
+router.delete("/teams/:id", requireRole(UserRole.ADMIN), async (request, response) => {
   await prisma.team.delete({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
   response.status(204).send();
 });
 
-router.get("/categories", async (_request, response) => {
+router.get("/categories", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (_request, response) => {
   const categories = await prisma.category.findMany({
     orderBy: { name: "asc" }
   });
   response.json(categories);
 });
 
-router.post("/categories", async (request, response) => {
+router.post("/categories", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = categorySchema.parse(request.body);
   const created = await prisma.category.create({
     data: {
@@ -639,10 +1965,10 @@ router.post("/categories", async (request, response) => {
   response.status(201).json(created);
 });
 
-router.put("/categories/:id", async (request, response) => {
+router.put("/categories/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = categorySchema.parse(request.body);
   const updated = await prisma.category.update({
-    where: { id: request.params.id },
+    where: { id: String(request.params.id) },
     data: {
       name: input.name,
       description: input.description
@@ -651,14 +1977,14 @@ router.put("/categories/:id", async (request, response) => {
   response.json(updated);
 });
 
-router.delete("/categories/:id", async (request, response) => {
+router.delete("/categories/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   await prisma.category.delete({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
   response.status(204).send();
 });
 
-router.get("/template-drafts", async (_request, response) => {
+router.get("/template-drafts", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (_request, response) => {
   const drafts = await prisma.templateDraft.findMany({
     orderBy: {
       updatedAt: "desc"
@@ -668,9 +1994,9 @@ router.get("/template-drafts", async (_request, response) => {
   response.json(drafts.map(serializeTemplateDraft));
 });
 
-router.get("/template-drafts/:id", async (request, response) => {
+router.get("/template-drafts/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const draft = await prisma.templateDraft.findUnique({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
 
   if (!draft) {
@@ -680,7 +2006,7 @@ router.get("/template-drafts/:id", async (request, response) => {
   response.json(serializeTemplateDraft(draft));
 });
 
-router.post("/template-drafts", async (request, response) => {
+router.post("/template-drafts", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = templateDraftSchema.parse(request.body);
   const created = await prisma.templateDraft.create({
     data: {
@@ -696,10 +2022,10 @@ router.post("/template-drafts", async (request, response) => {
   response.status(201).json(serializeTemplateDraft(created));
 });
 
-router.put("/template-drafts/:id", async (request, response) => {
+router.put("/template-drafts/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = templateDraftSchema.parse(request.body);
   const updated = await prisma.templateDraft.update({
-    where: { id: request.params.id },
+    where: { id: String(request.params.id) },
     data: {
       name: input.name,
       slug: input.slug,
@@ -713,15 +2039,15 @@ router.put("/template-drafts/:id", async (request, response) => {
   response.json(serializeTemplateDraft(updated));
 });
 
-router.delete("/template-drafts/:id", async (request, response) => {
+router.delete("/template-drafts/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   await prisma.templateDraft.delete({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
 
   response.status(204).send();
 });
 
-router.get("/question-library", async (_request, response) => {
+router.get("/question-library", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (_request, response) => {
   const questions = await prisma.questionLibraryItem.findMany({
     orderBy: {
       updatedAt: "desc"
@@ -755,7 +2081,7 @@ router.get("/question-library", async (_request, response) => {
   );
 });
 
-router.post("/question-library", async (request, response) => {
+router.post("/question-library", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = questionLibrarySchema.parse(request.body);
   const created = await prisma.questionLibraryItem.create({
     data: {
@@ -775,10 +2101,10 @@ router.post("/question-library", async (request, response) => {
   });
 });
 
-router.put("/question-library/:id", async (request, response) => {
+router.put("/question-library/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = questionLibrarySchema.parse(request.body);
   const updated = await prisma.questionLibraryItem.update({
-    where: { id: request.params.id },
+    where: { id: String(request.params.id) },
     data: {
       title: input.title,
       prompt: input.prompt,
@@ -796,15 +2122,15 @@ router.put("/question-library/:id", async (request, response) => {
   });
 });
 
-router.delete("/question-library/:id", async (request, response) => {
+router.delete("/question-library/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   await prisma.questionLibraryItem.delete({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
 
   response.status(204).send();
 });
 
-router.get("/domain-library", async (_request, response) => {
+router.get("/domain-library", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (_request, response) => {
   const domains = await prisma.domainLibraryItem.findMany({
     orderBy: {
       updatedAt: "desc"
@@ -831,7 +2157,7 @@ router.get("/domain-library", async (_request, response) => {
   );
 });
 
-router.post("/domain-library", async (request, response) => {
+router.post("/domain-library", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = domainLibrarySchema.parse(request.body);
   const created = await prisma.domainLibraryItem.create({
     data: {
@@ -849,10 +2175,10 @@ router.post("/domain-library", async (request, response) => {
   });
 });
 
-router.put("/domain-library/:id", async (request, response) => {
+router.put("/domain-library/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = domainLibrarySchema.parse(request.body);
   const updated = await prisma.domainLibraryItem.update({
-    where: { id: request.params.id },
+    where: { id: String(request.params.id) },
     data: {
       title: input.title,
       description: input.description,
@@ -868,9 +2194,9 @@ router.put("/domain-library/:id", async (request, response) => {
   });
 });
 
-router.delete("/domain-library/:id", async (request, response) => {
+router.delete("/domain-library/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   await prisma.domainLibraryItem.delete({
-    where: { id: request.params.id }
+    where: { id: String(request.params.id) }
   });
 
   response.status(204).send();
@@ -987,7 +2313,7 @@ router.get("/templates/:id", async (request, response) => {
   });
 });
 
-router.post("/templates", async (request, response) => {
+router.post("/templates", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = templateSchema.parse(request.body);
   const result = await createTemplate(input);
   response.status(201).json({
@@ -996,22 +2322,36 @@ router.post("/templates", async (request, response) => {
   });
 });
 
-router.put("/templates/:id", async (request, response) => {
+router.put("/templates/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   const input = templateSchema.parse(request.body);
-  const result = await updateTemplate(request.params.id, input);
+  const result = await updateTemplate(String(request.params.id), input);
   response.json({
     id: result.template.id,
     version: serializeTemplateVersion(result.version)
   });
 });
 
-router.delete("/templates/:id", async (request, response) => {
-  await deleteTemplate(request.params.id);
+router.delete("/templates/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  await deleteTemplate(String(request.params.id));
   response.status(204).send();
 });
 
-router.get("/assessment-runs", async (_request, response) => {
+router.get("/assessment-runs", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
   const runs = await prisma.assessmentRun.findMany({
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? undefined
+        : user.role === UserRole.VIEWER
+          ? {
+              status: AssessmentRunStatus.SUBMITTED,
+              OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+            }
+          : {
+              OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+            },
     include: {
       team: true,
       templateVersion: true
@@ -1021,32 +2361,50 @@ router.get("/assessment-runs", async (_request, response) => {
     }
   });
 
-  response.json(
-    runs.map((run) => ({
-      id: run.id,
-      title: run.title,
-      ownerName: run.ownerName,
-      dueDate: run.dueDate,
-      periodType: run.periodType,
-      periodLabel: run.periodLabel,
-      periodBucket: run.periodBucket,
-      status: run.status,
-      overallScore: run.overallScore,
-      submittedAt: run.submittedAt,
-      submissionSummary: run.submissionSummary,
-      updatedAt: run.updatedAt,
-      team: run.team,
-      templateVersion: {
-        id: run.templateVersionId,
-        name: run.templateVersion.name,
-        versionNumber: run.templateVersion.versionNumber
-      }
-    }))
-  );
+  response.json(runs.map(serializeAssessmentRunSummary));
+});
+
+router.get("/my-assessments", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds = await getUserTeamIds(user.id);
+  const accessibleRuns = await prisma.assessmentRun.findMany({
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? undefined
+        : user.role === UserRole.VIEWER
+          ? {
+              status: AssessmentRunStatus.SUBMITTED,
+              OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+            }
+          : {
+              OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+            },
+    include: {
+      team: true,
+      templateVersion: true
+    },
+    orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }]
+  });
+
+  response.json({
+    assignedActive: accessibleRuns
+      .filter((run) => run.ownerUserId === user.id && run.status !== AssessmentRunStatus.SUBMITTED && run.status !== AssessmentRunStatus.ARCHIVED)
+      .map(serializeAssessmentRunSummary),
+    teamActive: accessibleRuns
+      .filter((run) => run.ownerUserId !== user.id && run.status !== AssessmentRunStatus.SUBMITTED && run.status !== AssessmentRunStatus.ARCHIVED)
+      .map(serializeAssessmentRunSummary),
+    submittedAccessible: accessibleRuns
+      .filter((run) => run.status === AssessmentRunStatus.SUBMITTED)
+      .map(serializeAssessmentRunSummary)
+  });
 });
 
 router.post("/assessment-runs/check-duplicate", async (request, response) => {
   const input = assessmentRunSchema.parse(request.body);
+  const user = request.adminUser!;
+  if (!(await canCreateAssessmentForTeam(user, input.teamId))) {
+    return response.status(403).json({ message: "You do not have permission to create runs for this team" });
+  }
   const matches = await findDuplicateRuns(input);
   const period = buildAssessmentPeriod(input);
 
@@ -1067,6 +2425,10 @@ router.post("/assessment-runs/check-duplicate", async (request, response) => {
 
 router.post("/assessment-runs", async (request, response) => {
   const input = assessmentRunSchema.parse(request.body);
+  const user = request.adminUser!;
+  if (!(await canCreateAssessmentForTeam(user, input.teamId))) {
+    return response.status(403).json({ message: "You do not have permission to create runs for this team" });
+  }
   const duplicates = await findDuplicateRuns(input);
 
   if (duplicates.length > 0 && !input.allowDuplicate) {
@@ -1088,26 +2450,74 @@ router.post("/assessment-runs", async (request, response) => {
     Prisma.AssessmentRunUncheckedCreateInput,
     "periodType" | "periodLabel" | "periodBucket" | "periodSortDate" | "year" | "quarter" | "startDate" | "endDate" | "referenceDate"
   >;
-  const created = await prisma.assessmentRun.create({
-    data: {
-      title: input.title,
-      teamId: input.teamId,
-      templateId: input.templateId,
-      templateVersionId: input.templateVersionId,
-      ownerName: input.ownerName?.trim() || null,
-      dueDate: input.dueDate ? new Date(input.dueDate) : null,
-      ...period
+  const ownerName = input.ownerName?.trim() || null;
+  const created = await prisma.$transaction(async (transaction) => {
+    const nextRun = await transaction.assessmentRun.create({
+      data: {
+        title: input.title,
+        teamId: input.teamId,
+        templateId: input.templateId,
+        templateVersionId: input.templateVersionId,
+        ownerUserId: input.ownerUserId ?? null,
+        ownerName,
+        dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        ...period
+      }
+    });
+
+    if (input.ownerUserId || ownerName) {
+      await transaction.assessmentRunAssignment.create({
+        data: {
+          assessmentRunId: nextRun.id,
+          assignedByUserId: user.id,
+          toUserId: input.ownerUserId ?? null,
+          toOwnerName: ownerName
+        }
+      });
     }
+
+    return nextRun;
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: created.id,
+    entityType: "assessment_run",
+    entityId: created.id,
+    action: "assessment_run.created",
+    summary: `${user.displayName} created assessment run ${created.title}`
+  });
+
+  await createRunNotification({
+    runId: created.id,
+    userId: created.ownerUserId,
+    type: "RUN_ASSIGNED",
+    title: "Assessment assigned",
+    message: `${created.title} has been assigned to you.`
   });
 
   response.status(201).json(created);
 });
 
 router.get("/assessment-runs/:id", async (request, response) => {
+  if (!(await canAccessAssessmentRun(request.adminUser!, String(request.params.id)))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
   const run = await prisma.assessmentRun.findUnique({
     where: { id: request.params.id },
     include: {
       team: true,
+      ownerUser: true,
+      assignmentHistory: {
+        include: {
+          assignedByUser: true,
+          fromUser: true,
+          toUser: true
+        },
+        orderBy: {
+          createdAt: "desc"
+        }
+      },
       templateVersion: {
         include: {
           domains: {
@@ -1134,9 +2544,14 @@ router.get("/assessment-runs/:id", async (request, response) => {
 
 router.put("/assessment-runs/:id", async (request, response) => {
   const input = updateAssessmentRunSchema.parse(request.body);
+  const runId = String(request.params.id);
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to update this run" });
+  }
 
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id }
+    where: { id: runId }
   });
 
   if (!run) {
@@ -1148,23 +2563,57 @@ router.put("/assessment-runs/:id", async (request, response) => {
   }
 
   const updated = await prisma.assessmentRun.update({
-    where: { id: request.params.id },
+    where: { id: runId },
     data: {
       title: input.title,
+      ownerUserId: input.ownerUserId ?? null,
       ownerName: input.ownerName?.trim() || null,
       dueDate: input.dueDate ? new Date(input.dueDate) : null,
       periodLabel: input.periodLabel?.trim() || run.periodLabel
     }
   });
 
+  await recordAssignmentChange({
+    assessmentRunId: runId,
+    assignedByUserId: request.adminUser!.id,
+    fromUserId: run.ownerUserId,
+    toUserId: input.ownerUserId ?? null,
+    fromOwnerName: run.ownerName,
+    toOwnerName: input.ownerName?.trim() || null
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.updated",
+    summary: `${request.adminUser!.displayName} updated assessment run ${updated.title}`
+  });
+
+  if (run.ownerUserId !== updated.ownerUserId && updated.ownerUserId) {
+    await createRunNotification({
+      runId,
+      userId: updated.ownerUserId,
+      type: "RUN_REASSIGNED",
+      title: "Assessment reassigned",
+      message: `${updated.title} has been reassigned to you.`
+    });
+  }
+
   response.json(updated);
 });
 
 router.put("/assessment-runs/:id/responses", async (request, response) => {
   const input = responseSchema.parse(request.body);
+  const runId = String(request.params.id);
+
+  if (!(await canEditAssessmentResponses(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to update responses for this run" });
+  }
 
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id }
+    where: { id: runId }
   });
 
   if (!run) {
@@ -1176,7 +2625,7 @@ router.put("/assessment-runs/:id/responses", async (request, response) => {
       prisma.assessmentResponse.upsert({
         where: {
           assessmentRunId_questionId: {
-            assessmentRunId: request.params.id,
+            assessmentRunId: runId,
             questionId: item.questionId
           }
         },
@@ -1186,7 +2635,7 @@ router.put("/assessment-runs/:id/responses", async (request, response) => {
           comment: item.comment ?? null
         },
         create: {
-          assessmentRunId: request.params.id,
+          assessmentRunId: runId,
           questionId: item.questionId,
           selectedValue: item.selectedValue,
           selectedLabel: item.selectedLabel,
@@ -1206,13 +2655,30 @@ router.put("/assessment-runs/:id/responses", async (request, response) => {
     }
   });
 
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.responses_saved",
+    summary: `${request.adminUser!.displayName} saved draft responses for ${run.title}`,
+    metadata: {
+      responseCount: input.responses.length
+    }
+  });
+
   response.json({ ok: true });
 });
 
 router.post("/assessment-runs/:id/submit", async (request, response) => {
   const input = submitAssessmentSchema.parse(request.body ?? {});
+  const runId = String(request.params.id);
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to submit this run" });
+  }
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id },
+    where: { id: runId },
     include: {
       responses: true
     }
@@ -1229,7 +2695,7 @@ router.post("/assessment-runs/:id/submit", async (request, response) => {
     : null;
 
   const updated = await prisma.assessmentRun.update({
-    where: { id: request.params.id },
+    where: { id: runId },
     data: {
       status: AssessmentRunStatus.SUBMITTED,
       submittedAt: new Date(),
@@ -1238,12 +2704,35 @@ router.post("/assessment-runs/:id/submit", async (request, response) => {
     }
   });
 
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.submitted",
+    summary: `${request.adminUser!.displayName} submitted assessment run ${updated.title}`
+  });
+
+  if (updated.ownerUserId && updated.ownerUserId !== request.adminUser!.id) {
+    await createRunNotification({
+      runId,
+      userId: updated.ownerUserId,
+      type: "RUN_SUBMITTED",
+      title: "Assessment submitted",
+      message: `${updated.title} has been submitted.`
+    });
+  }
+
   response.json(updated);
 });
 
 router.post("/assessment-runs/:id/archive", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to archive this run" });
+  }
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id }
+    where: { id: runId }
   });
 
   if (!run) {
@@ -1255,16 +2744,29 @@ router.post("/assessment-runs/:id/archive", async (request, response) => {
   }
 
   const updated = await prisma.assessmentRun.update({
-    where: { id: request.params.id },
+    where: { id: runId },
     data: { status: AssessmentRunStatus.ARCHIVED }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.archived",
+    summary: `${request.adminUser!.displayName} archived assessment run ${updated.title}`
   });
 
   response.json(updated);
 });
 
 router.post("/assessment-runs/:id/unarchive", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to restore this run" });
+  }
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id },
+    where: { id: runId },
     include: {
       responses: true
     }
@@ -1279,18 +2781,31 @@ router.post("/assessment-runs/:id/unarchive", async (request, response) => {
   }
 
   const updated = await prisma.assessmentRun.update({
-    where: { id: request.params.id },
+    where: { id: runId },
     data: {
       status: run.responses.length > 0 ? AssessmentRunStatus.IN_PROGRESS : AssessmentRunStatus.DRAFT
     }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.restored",
+    summary: `${request.adminUser!.displayName} restored assessment run ${updated.title}`
   });
 
   response.json(updated);
 });
 
 router.delete("/assessment-runs/:id", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to delete this run" });
+  }
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id }
+    where: { id: runId }
   });
 
   if (!run) {
@@ -1302,279 +2817,346 @@ router.delete("/assessment-runs/:id", async (request, response) => {
   }
 
   await prisma.assessmentRun.delete({
-    where: { id: request.params.id }
+    where: { id: runId }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.deleted",
+    summary: `${request.adminUser!.displayName} deleted assessment run ${run.title}`
   });
 
   response.status(204).send();
 });
 
 router.get("/assessment-runs/:id/results", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to these assessment results" });
+  }
+  const compareToRunId = typeof request.query.compareToRunId === "string" ? request.query.compareToRunId : undefined;
+  const payload = await buildAssessmentResultsPayload(runId, compareToRunId);
+  if (!payload) {
+    return response.status(404).json({ message: "Assessment results not found" });
+  }
+
+  response.json(payload);
+});
+
+router.post("/assessment-runs/:id/ai-executive-summary", async (request, response) => {
+  const runId = String(request.params.id);
+  const forceRefresh = request.query.refresh === "1";
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to these assessment results" });
+  }
+
+  const payload = await buildAssessmentResultsPayload(runId);
+  if (!payload) {
+    return response.status(404).json({ message: "Assessment results not found" });
+  }
+
+  if (payload.status !== AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "AI executive summary is only available for submitted runs" });
+  }
+
+  const summary = await getCachedOrGenerateResultsExecutiveSummary({
+    results: payload,
+    actorUserId: request.adminUser!.id,
+    forceRefresh
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "ai_summary",
+    entityId: runId,
+    action: "assessment_results.ai_executive_summary_generated",
+    summary: `${request.adminUser!.displayName} ${summary.cached ? "opened cached" : "generated"} an AI executive summary for ${payload.title}`,
+    metadata: {
+      cached: summary.cached,
+      compareToRunId: payload.previousRun?.assessmentRunId ?? null
+    }
+  });
+
+  response.json(summary);
+});
+
+router.post("/assessment-runs/:id/ai-ask", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = resultsAiQuestionSchema.parse(request.body ?? {});
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to these assessment results" });
+  }
+
+  const payload = await buildAssessmentResultsPayload(runId, input.compareToRunId);
+  if (!payload) {
+    return response.status(404).json({ message: "Assessment results not found" });
+  }
+
+  if (payload.status !== AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Ask this report is only available for submitted runs" });
+  }
+
+  const answer = await generateResultsQuestionAnswer({
+    results: payload,
+    question: input.question,
+    history: input.history ?? []
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "ai_summary",
+    entityId: runId,
+    action: "assessment_results.ai_question_answered",
+    summary: `${request.adminUser!.displayName} asked AI about assessment results for ${payload.title}`,
+    metadata: {
+      compareToRunId: payload.previousRun?.assessmentRunId ?? null,
+      question: input.question
+    }
+  });
+
+  response.json(answer);
+});
+
+router.get("/assessment-runs/:id/share-links", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const links = await prisma.reportShareLink.findMany({
+    where: {
+      assessmentRunId: runId
+    },
+    include: {
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      }
+    },
+    orderBy: {
+      createdAt: "desc"
+    }
+  });
+
+  response.json(
+    links.map((link) => ({
+      id: link.id,
+      token: link.token,
+      shareUrl: `/shared-results/${link.token}`,
+      isRevoked: link.isRevoked,
+      expiresAt: link.expiresAt,
+      createdAt: link.createdAt,
+      createdByUser: link.createdByUser
+    }))
+  );
+});
+
+router.post("/assessment-runs/:id/share-links", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = reportShareSchema.parse(request.body ?? {});
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
   const run = await prisma.assessmentRun.findUnique({
-    where: { id: request.params.id },
+    where: { id: runId },
     include: {
       team: true,
-      templateVersion: {
-        include: {
-          domains: {
-            include: {
-              questions: {
-                include: {
-                  levels: true
-                }
-              }
-            }
-          }
-        }
-      },
-      responses: true
+      templateVersion: true
     }
   });
 
   if (!run) {
-    return response.status(404).json({ message: "Assessment results not found" });
+    return response.status(404).json({ message: "Assessment run not found" });
   }
 
-  const serialized = serializeAssessmentRun(run);
+  if (run.status !== AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Only submitted assessment results can be shared" });
+  }
 
-  const comparisonCandidatesData = await prisma.assessmentRun.findMany({
-    where: {
-      id: { not: run.id },
-      teamId: run.teamId,
-      templateId: run.templateId,
-      status: AssessmentRunStatus.SUBMITTED
-    },
-    orderBy: [{ periodSortDate: "desc" }, { createdAt: "desc" }]
-  });
-
-  const comparisonCandidates = comparisonCandidatesData.filter(
-    (item) => item.periodSortDate < run.periodSortDate || (item.periodSortDate.getTime() === run.periodSortDate.getTime() && item.createdAt < run.createdAt)
-  );
-
-  const defaultPreviousRunMeta = comparisonCandidates[0] ?? null;
-  const compareToRunId = typeof request.query.compareToRunId === "string" ? request.query.compareToRunId : undefined;
-  const resolvedCompareToRunId =
-    compareToRunId && comparisonCandidates.some((item) => item.id === compareToRunId) ? compareToRunId : defaultPreviousRunMeta?.id;
-
-  const previousRun = resolvedCompareToRunId
-    ? await prisma.assessmentRun.findUnique({
-        where: { id: resolvedCompareToRunId },
-        include: {
-          team: true,
-          templateVersion: {
-            include: {
-              domains: {
-                include: {
-                  questions: {
-                    include: {
-                      levels: true
-                    }
-                  }
-                }
-              }
-            }
-          },
-          responses: true
-        }
-      })
-    : null;
-
-  const previousSerialized = previousRun ? serializeAssessmentRun(previousRun) : null;
-
-  const trendData = await prisma.assessmentRun.findMany({
-    where: {
-      teamId: run.teamId,
-      status: AssessmentRunStatus.SUBMITTED,
-      templateId: run.templateId
-    },
-    include: {
-      team: true,
-      templateVersion: {
-        include: {
-          domains: {
-            include: {
-              questions: {
-                include: {
-                  levels: true
-                }
-              }
-            }
-          }
-        }
-      },
-      responses: true
-    },
-    orderBy: [{ periodSortDate: "asc" }, { createdAt: "asc" }]
-  });
-
-  const comparisonRuns = await prisma.assessmentRun.findMany({
-    where: {
-      status: AssessmentRunStatus.SUBMITTED,
-      templateId: run.templateId,
-      periodBucket: run.periodBucket
-    },
-    include: {
-      team: true
+  const created = await prisma.reportShareLink.create({
+    data: {
+      token: createShareToken(),
+      assessmentRunId: runId,
+      createdByUserId: request.adminUser!.id,
+      expiresAt: input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null
     }
   });
 
-  const domainDelta = serialized.domains.map((domain) => {
-    const previousDomain = previousSerialized?.domains.find((item) => item.title === domain.title) ?? null;
-    return {
-      domainId: domain.id,
-      title: domain.title,
-      currentScore: domain.averageScore,
-      previousScore: previousDomain?.averageScore ?? null,
-      scoreChange:
-        typeof domain.averageScore === "number" && typeof previousDomain?.averageScore === "number"
-          ? roundDelta(domain.averageScore - previousDomain.averageScore)
-          : null
-    };
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "report_share",
+    entityId: created.id,
+    action: "report.share_created",
+    summary: `${request.adminUser!.displayName} created a share link for ${run.title}`
   });
 
-  const questionDelta = serialized.domains.flatMap((domain) =>
-    domain.questions.map((question) => {
-      const previousQuestion =
-        previousSerialized?.domains
-          .find((item) => item.title === domain.title)
-          ?.questions.find((item) => item.prompt === question.prompt) ?? null;
+  response.status(201).json({
+    id: created.id,
+    token: created.token,
+    shareUrl: `/shared-results/${created.token}`,
+    isRevoked: created.isRevoked,
+    expiresAt: created.expiresAt,
+    createdAt: created.createdAt
+  });
+});
 
-      return {
-        domainId: domain.id,
-        domainTitle: domain.title,
-        questionId: question.id,
-        prompt: question.prompt,
-        currentValue: question.response?.selectedValue ?? null,
-        previousValue: previousQuestion?.response?.selectedValue ?? null,
-        scoreChange:
-          typeof question.response?.selectedValue === "number" && typeof previousQuestion?.response?.selectedValue === "number"
-            ? roundDelta(question.response.selectedValue - previousQuestion.response.selectedValue)
-            : null,
-        currentLabel: question.response?.selectedLabel ?? null,
-        previousLabel: previousQuestion?.response?.selectedLabel ?? null
-      };
+router.post("/assessment-runs/:id/send-report-email", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = sendReportEmailSchema.parse(request.body ?? {});
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const settings = await getReportEmailDeliverySettings();
+  if (!settings.available) {
+    return response.status(400).json({ message: "Submitted report email delivery is currently unavailable" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    include: {
+      team: true,
+      templateVersion: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status !== AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Only submitted assessment results can be emailed" });
+  }
+
+  const token = createShareToken();
+  const expiresAt = input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null;
+  const shareUrl = buildShareUrl(token);
+  const recipientLabel = input.recipientName?.trim() ? `${input.recipientName.trim()} <${input.recipientEmail}>` : input.recipientEmail;
+
+  await sendReportEmail({
+    to: recipientLabel,
+    subject: `Submitted assessment report: ${run.title}`,
+    body: buildReportEmailBody({
+      runTitle: run.title,
+      teamName: run.team.name,
+      periodLabel: run.periodLabel,
+      templateName: run.templateVersion.name,
+      overallScore: run.overallScore,
+      senderName: request.adminUser!.displayName,
+      shareUrl,
+      note: input.note?.trim() || "",
+      expiresAt
     })
-  );
-
-  const sortedQuestions = questionDelta
-    .filter((question) => typeof question.currentValue === "number")
-    .sort((a, b) => {
-      if ((a.currentValue ?? 0) !== (b.currentValue ?? 0)) {
-        return (a.currentValue ?? 0) - (b.currentValue ?? 0);
-      }
-
-      return a.prompt.localeCompare(b.prompt);
-    });
-
-  const strongestDomain = [...domainDelta]
-    .filter((domain) => typeof domain.currentScore === "number")
-    .sort((a, b) => (b.currentScore ?? 0) - (a.currentScore ?? 0))[0] ?? null;
-
-  const weakestDomain = [...domainDelta]
-    .filter((domain) => typeof domain.currentScore === "number")
-    .sort((a, b) => (a.currentScore ?? 0) - (b.currentScore ?? 0))[0] ?? null;
-
-  const scoringLabels = serialized.templateVersion.scoringLabels;
-  const distribution = scoringLabels.map((label, index) => ({
-    value: index + 1,
-    label,
-    count: serialized.domains.reduce(
-      (sum, domain) =>
-        sum + domain.questions.filter((question) => question.response?.selectedValue === index + 1).length,
-      0
-    )
-  }));
-
-  const domainTrend = trendData.map((item) => {
-    const serializedTrendRun = serializeAssessmentRun(item);
-    return {
-      assessmentRunId: item.id,
-      periodLabel: item.periodLabel,
-      domains: serializedTrendRun.domains.map((domain) => ({
-        domainId: domain.id,
-        title: domain.title,
-        score: domain.averageScore
-      }))
-    };
   });
 
-  response.json({
-    ...serialized,
-    trend: trendData.map((item) => ({
-      assessmentRunId: item.id,
-      periodLabel: item.periodLabel,
-      overallScore: item.overallScore ?? 0
-    })),
-    domainTrend,
-    comparison: comparisonRuns.map((item) => ({
-      teamName: item.team.name,
-      overallScore: item.overallScore ?? 0,
-      status: item.status
-    })),
-    comparisonCandidates: comparisonCandidates.map((item) => ({
-      assessmentRunId: item.id,
-      title: item.title,
-      periodLabel: item.periodLabel,
-      overallScore: item.overallScore ?? 0,
-      submittedAt: item.submittedAt,
-      isDefault: item.id === defaultPreviousRunMeta?.id
-    })),
-    previousRun: previousSerialized
-      ? {
-          assessmentRunId: previousSerialized.id,
-          title: previousSerialized.title,
-          periodLabel: previousSerialized.periodLabel,
-          overallScore: previousSerialized.overallScore ?? 0,
-          submittedAt: previousSerialized.submittedAt
+  const created = await prisma.reportShareLink.create({
+    data: {
+      token,
+      assessmentRunId: runId,
+      createdByUserId: request.adminUser!.id,
+      expiresAt
+    },
+    include: {
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
         }
-      : null,
-    delta: {
-      overallScoreChange:
-        typeof serialized.overallScore === "number" && typeof previousSerialized?.overallScore === "number"
-          ? roundDelta(serialized.overallScore - previousSerialized.overallScore)
-          : null,
-      domains: domainDelta,
-      questions: questionDelta
-    },
-    highlights: {
-      strongestDomain: strongestDomain
-        ? {
-            domainId: strongestDomain.domainId,
-            title: strongestDomain.title,
-            score: strongestDomain.currentScore
-          }
-        : null,
-      weakestDomain: weakestDomain
-        ? {
-            domainId: weakestDomain.domainId,
-            title: weakestDomain.title,
-            score: weakestDomain.currentScore
-          }
-        : null,
-      strengths: [...sortedQuestions]
-        .sort((a, b) => (b.currentValue ?? 0) - (a.currentValue ?? 0))
-        .slice(0, 3)
-        .map((question) => ({
-          domainTitle: question.domainTitle,
-          prompt: question.prompt,
-          selectedValue: question.currentValue,
-          selectedLabel: question.currentLabel
-        })),
-      focusAreas: sortedQuestions.slice(0, 3).map((question) => ({
-        domainTitle: question.domainTitle,
-        prompt: question.prompt,
-        selectedValue: question.currentValue,
-        selectedLabel: question.currentLabel
-      }))
-    },
-    distribution: {
-      levels: distribution
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "report_share",
+    entityId: created.id,
+    action: "report.share_email_sent",
+    summary: `${request.adminUser!.displayName} sent a submitted report email for ${run.title}`,
+    metadata: {
+      recipientEmail: input.recipientEmail,
+      recipientName: input.recipientName?.trim() || null,
+      expiresAt,
+      noteIncluded: Boolean(input.note?.trim())
+    }
+  });
+
+  response.status(201).json({
+    ok: true,
+    shareLink: {
+      id: created.id,
+      token: created.token,
+      shareUrl: `/shared-results/${created.token}`,
+      isRevoked: created.isRevoked,
+      expiresAt: created.expiresAt,
+      createdAt: created.createdAt,
+      createdByUser: created.createdByUser
     }
   });
 });
 
-router.get("/reports/latest-by-team", async (_request, response) => {
-  const latestRuns = await getLatestSubmittedRunsByTeam();
-  const latestRunsByTeamTemplate = await getLatestSubmittedRunsByTeamTemplate();
+router.post("/assessment-runs/:id/share-links/:shareId/revoke", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const updated = await prisma.reportShareLink.updateMany({
+    where: {
+      id: String(request.params.shareId),
+      assessmentRunId: runId
+    },
+    data: {
+      isRevoked: true
+    }
+  });
+
+  if (!updated.count) {
+    return response.status(404).json({ message: "Share link not found" });
+  }
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "report_share",
+    entityId: String(request.params.shareId),
+    action: "report.share_revoked",
+    summary: `${request.adminUser!.displayName} revoked a report share link`
+  });
+
+  response.json({ ok: true });
+});
+
+router.get("/reports/latest-by-team", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
+  const latestRuns = (await getLatestSubmittedRunsByTeam()).filter(
+    (run) =>
+      user.role === UserRole.ADMIN
+      || user.role === UserRole.TEMPLATE_MANAGER
+      || run.ownerUserId === user.id
+      || teamIds.includes(run.teamId)
+  );
+  const latestRunsByTeamTemplate = (await getLatestSubmittedRunsByTeamTemplate()).filter(
+    (run) =>
+      user.role === UserRole.ADMIN
+      || user.role === UserRole.TEMPLATE_MANAGER
+      || run.ownerUserId === user.id
+      || teamIds.includes(run.teamId)
+  );
 
   const serializeReportRun = (run: (typeof latestRuns)[number]) => {
     const serialized = serializeAssessmentRun(run);
@@ -1693,15 +3275,241 @@ router.get("/reports/latest-by-team", async (_request, response) => {
   });
 });
 
-router.get("/dashboard/summary", async (_request, response) => {
+router.post("/reports/ai-brief", async (request, response) => {
+  const input = reportsAiBriefSchema.parse(request.body ?? {});
+  const forceRefresh = request.query.refresh === "1";
+  const brief = await getCachedOrGenerateReportsAiBrief({
+    input,
+    actorUserId: request.adminUser!.id,
+    forceRefresh
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "reports",
+    action: "reports.ai_brief_generated",
+    summary: `${request.adminUser!.displayName} ${brief.cached ? "opened cached" : "generated"} an AI brief for the reports workspace`,
+    metadata: {
+      cached: brief.cached,
+      viewMode: input.viewMode,
+      rowsCount: input.summary.rowsCount,
+      selectedDomainLabel: input.selectedDomainLabel,
+      selectedQuestionLabel: input.selectedQuestionLabel
+    }
+  });
+
+  response.json(brief);
+});
+
+router.post("/templates/ai/question-assist", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiQuestionAssistSchema.parse(request.body ?? {});
+  const suggestion = await generateQuestionAssist(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-question",
+    action: "templates.ai_question_assist_generated",
+    summary: `${request.adminUser!.displayName} generated AI question assistance in template authoring`,
+    metadata: {
+      templateName: input.templateName,
+      domainTitle: input.domainTitle
+    }
+  });
+
+  response.json(suggestion);
+});
+
+router.post("/templates/ai/scaffold", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiScaffoldSchema.parse(request.body ?? {});
+  const scaffold = await generateTemplateScaffold(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-scaffold",
+    action: "templates.ai_scaffold_generated",
+    summary: `${request.adminUser!.displayName} generated an AI template scaffold`,
+    metadata: {
+      category: input.category
+    }
+  });
+
+  response.json(scaffold);
+});
+
+router.post("/templates/ai/domain-suggestions", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiDomainSuggestionsSchema.parse(request.body ?? {});
+  const result = await generateTemplateDomains(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-domains",
+    action: "templates.ai_domain_suggestions_generated",
+    summary: `${request.adminUser!.displayName} generated AI domain suggestions for template authoring`,
+    metadata: {
+      templateName: input.templateName
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/single-domain", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiSingleDomainSchema.parse(request.body ?? {});
+  const result = await generateSingleTemplateDomain(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-single-domain",
+    action: "templates.ai_single_domain_generated",
+    summary: `${request.adminUser!.displayName} generated a replacement AI domain for template authoring`,
+    metadata: {
+      templateName: input.templateName
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/single-question", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiSingleQuestionSchema.parse(request.body ?? {});
+  const result = await generateSingleDomainQuestion(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-single-question",
+    action: "templates.ai_single_question_generated",
+    summary: `${request.adminUser!.displayName} generated a replacement AI question for template authoring`,
+    metadata: {
+      templateName: input.templateName,
+      domainTitle: input.domainTitle
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/domain-questions", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiDomainQuestionsSchema.parse(request.body ?? {});
+  const result = await generateDomainQuestions(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-domain-questions",
+    action: "templates.ai_domain_questions_generated",
+    summary: `${request.adminUser!.displayName} generated AI questions for a template domain`,
+    metadata: {
+      templateName: input.templateName,
+      domainTitle: input.domainTitle
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/full-draft", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiFullDraftSchema.parse(request.body ?? {});
+  const result = await generateFullTemplateDraft(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-full-draft",
+    action: "templates.ai_full_draft_generated",
+    summary: `${request.adminUser!.displayName} generated a one-shot AI template draft`,
+    metadata: {
+      category: input.category,
+      domainCount: result.domains.length
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/domain-assist", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiDomainAssistSchema.parse(request.body ?? {});
+  const suggestion = await generateDomainAssist(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-domain",
+    action: "templates.ai_domain_assist_generated",
+    summary: `${request.adminUser!.displayName} generated AI domain assistance in template authoring`,
+    metadata: {
+      templateName: input.templateName,
+      domainTitle: input.domainTitle
+    }
+  });
+
+  response.json(suggestion);
+});
+
+router.post("/templates/ai/consistency-review", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiConsistencyReviewSchema.parse(request.body ?? {});
+  const review = await generateTemplateConsistencyReview(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-review",
+    action: "templates.ai_consistency_review_generated",
+    summary: `${request.adminUser!.displayName} generated an AI consistency review for template authoring`,
+    metadata: {
+      templateName: input.templateName,
+      domainCount: input.domains.length
+    }
+  });
+
+  response.json(review);
+});
+
+router.get("/dashboard/summary", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
+  const assessmentWhere =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+      ? undefined
+      : user.role === UserRole.VIEWER
+        ? {
+            status: AssessmentRunStatus.SUBMITTED,
+            OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+          }
+        : {
+            OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+          };
   const [templates, runs, submittedRuns, teams] = await Promise.all([
     prisma.assessmentTemplate.count(),
-    prisma.assessmentRun.count(),
-    prisma.assessmentRun.count({ where: { status: AssessmentRunStatus.SUBMITTED } }),
-    prisma.team.count()
+    prisma.assessmentRun.count({ where: assessmentWhere }),
+    prisma.assessmentRun.count({
+      where: {
+        ...(assessmentWhere ?? {}),
+        status: AssessmentRunStatus.SUBMITTED
+      }
+    }),
+    prisma.team.count({
+      where:
+        user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+          ? undefined
+          : {
+              memberships: {
+                some: {
+                  userId: user.id
+                }
+              }
+            }
+    })
   ]);
 
   const latestRuns = await prisma.assessmentRun.findMany({
+    where: assessmentWhere,
     include: {
       team: true,
       templateVersion: true
@@ -1714,6 +3522,7 @@ router.get("/dashboard/summary", async (_request, response) => {
 
   const latestSubmittedPerTeamSource = await prisma.assessmentRun.findMany({
     where: {
+      ...(assessmentWhere ?? {}),
       status: AssessmentRunStatus.SUBMITTED
     },
     include: {
@@ -1753,6 +3562,12 @@ router.get("/dashboard/summary", async (_request, response) => {
   }
 
   response.json({
+    currentUser: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role
+    },
     templates,
     runs,
     submittedRuns,
@@ -1767,13 +3582,44 @@ router.get("/dashboard/summary", async (_request, response) => {
       templateName: item.templateVersion.name,
       updatedAt: item.updatedAt
     })),
-    latestSubmittedByTeam: Array.from(latestSubmittedPerTeam.values())
+    latestSubmittedByTeam: Array.from(latestSubmittedPerTeam.values()),
+    myWork: {
+      assignedRuns: latestRuns
+        .filter((item) => item.ownerUserId === user.id && item.status !== AssessmentRunStatus.SUBMITTED && item.status !== AssessmentRunStatus.ARCHIVED)
+        .slice(0, 5)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          teamName: item.team.name,
+          dueDate: item.dueDate,
+          status: item.status
+        })),
+      teamRuns: latestRuns
+        .filter((item) => item.ownerUserId !== user.id)
+        .slice(0, 5)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          teamName: item.team.name,
+          dueDate: item.dueDate,
+          status: item.status
+        }))
+    }
   });
 });
 
-router.get("/dashboard/trends", async (_request, response) => {
+router.get("/dashboard/trends", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
   const submittedRuns = await prisma.assessmentRun.findMany({
-    where: { status: AssessmentRunStatus.SUBMITTED },
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? { status: AssessmentRunStatus.SUBMITTED }
+        : {
+            status: AssessmentRunStatus.SUBMITTED,
+            OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+          },
     orderBy: [{ periodSortDate: "asc" }, { createdAt: "asc" }]
   });
 
@@ -1799,9 +3645,18 @@ router.get("/dashboard/trends", async (_request, response) => {
   );
 });
 
-router.get("/dashboard/comparison", async (_request, response) => {
+router.get("/dashboard/comparison", async (request, response) => {
+  const user = request.adminUser!;
+  const teamIds =
+    user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER ? [] : await getUserTeamIds(user.id);
   const latestSubmitted = await prisma.assessmentRun.findMany({
-    where: { status: AssessmentRunStatus.SUBMITTED },
+    where:
+      user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+        ? { status: AssessmentRunStatus.SUBMITTED }
+        : {
+            status: AssessmentRunStatus.SUBMITTED,
+            OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+          },
     include: {
       team: true
     },

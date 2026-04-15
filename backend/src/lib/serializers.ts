@@ -14,9 +14,10 @@ type TemplateVersionGraph = Prisma.TemplateVersionGetPayload<{
   };
 }>;
 
-type AssessmentRunGraph = Prisma.AssessmentRunGetPayload<{
+type AssessmentRunBaseGraph = Prisma.AssessmentRunGetPayload<{
   include: {
     team: true;
+    ownerUser: true;
     templateVersion: {
       include: {
         domains: {
@@ -39,6 +40,30 @@ type AssessmentRunGraph = Prisma.AssessmentRunGetPayload<{
   startDate: Date | null;
   endDate: Date | null;
   referenceDate: Date | null;
+};
+
+type AssessmentRunWithAssignmentHistory = AssessmentRunBaseGraph & {
+  assignmentHistory?: Array<{
+    id: string;
+    createdAt: Date;
+    fromOwnerName: string | null;
+    toOwnerName: string | null;
+    assignedByUser: {
+      id: string;
+      displayName: string;
+      username: string;
+    };
+    fromUser: {
+      id: string;
+      displayName: string;
+      username: string;
+    } | null;
+    toUser: {
+      id: string;
+      displayName: string;
+      username: string;
+    } | null;
+  }>;
 };
 
 export function serializeTemplateVersion(version: TemplateVersionGraph) {
@@ -74,7 +99,7 @@ export function serializeTemplateVersion(version: TemplateVersionGraph) {
   };
 }
 
-export function serializeAssessmentRun(run: AssessmentRunGraph) {
+export function serializeAssessmentRun(run: AssessmentRunWithAssignmentHistory) {
   const domains = run.templateVersion.domains
     .sort((a, b) => a.sortOrder - b.sortOrder)
     .map((domain) => {
@@ -130,7 +155,40 @@ export function serializeAssessmentRun(run: AssessmentRunGraph) {
     id: run.id,
     title: run.title,
     team: run.team,
+    ownerUser: run.ownerUser
+      ? {
+          id: run.ownerUser.id,
+          displayName: run.ownerUser.displayName,
+          username: run.ownerUser.username,
+          role: run.ownerUser.role
+        }
+      : null,
     ownerName: run.ownerName,
+    assignmentHistory: (run.assignmentHistory ?? []).map((item) => ({
+          id: item.id,
+          createdAt: item.createdAt,
+          assignedByUser: {
+            id: item.assignedByUser.id,
+            displayName: item.assignedByUser.displayName,
+            username: item.assignedByUser.username
+          },
+          fromUser: item.fromUser
+            ? {
+                id: item.fromUser.id,
+                displayName: item.fromUser.displayName,
+                username: item.fromUser.username
+              }
+            : null,
+          toUser: item.toUser
+            ? {
+                id: item.toUser.id,
+                displayName: item.toUser.displayName,
+                username: item.toUser.username
+              }
+            : null,
+          fromOwnerName: item.fromOwnerName,
+          toOwnerName: item.toOwnerName
+        })),
     dueDate: run.dueDate,
     periodType: run.periodType,
     periodLabel: run.periodLabel,

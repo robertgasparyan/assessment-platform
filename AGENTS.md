@@ -13,21 +13,37 @@
 
 ## Authentication conventions
 
-- `v1.0` now includes simple admin authentication.
-- Current scope is intentionally limited to one admin user.
-- The app should load behind a login screen until a valid admin session exists.
+- `v1.0` now includes real user management on top of the earlier auth baseline.
+- The app should load behind a login screen until a valid session exists.
 - Current auth model:
-  - persisted `AdminUser` record in PostgreSQL
-  - bearer token session stored on the admin user record
-  - `login`, `logout`, and `change password` only
-- Seed data must create a default admin account:
+  - persisted `User` record in PostgreSQL
+  - bearer token session stored on the signed-in user record
+  - `login`, `logout`, `change password`, and admin password reset
+- User roles currently supported:
+  - `ADMIN`
+  - `TEMPLATE_MANAGER`
+  - `TEAM_LEAD`
+  - `TEAM_MEMBER`
+  - `VIEWER`
+- Seed data must create a default administrator account:
   - username `admin`
   - password `admin`
 - The login screen should stay clean:
   - no prefilled credentials
   - no visible default `admin / admin` helper copy on the page itself
 - The UI should make password change and logout available from a profile control in the shell after login, not as a permanent sidebar form block.
-- Broader user management, roles, and multi-user auth remain version 2 work.
+- `Users` is now a dedicated admin area for:
+  - create/edit users
+  - activation/deactivation
+  - role assignment
+  - team membership assignment
+  - password reset
+- New-user creation and admin password reset should support `mustChangePassword` so onboarding does not rely on permanent shared credentials.
+- Invitation-based onboarding now exists:
+  - admin can generate a one-time activation link
+  - `activate-account` lets a user choose their own password
+  - activation should clear the invite token and sign the user in immediately
+- Broader access-control tightening, invitations, email reset flows, and SSO remain version 2 work.
 
 ## Product structure
 
@@ -41,8 +57,10 @@
 
 - `Templates`: compose templates and publish versions.
 - `Libraries`: manage reusable categories, domains, and questions directly, not only through template authoring.
+- `Users`: manage accounts, roles, and team memberships.
 - `Teams`: manage teams that can be assigned to assessment runs.
 - `Assessments`: create, continue, and review assessment runs.
+- `My Assessments`: personal assigned/team-visible workspace for the current user.
 - `Reports`: deeper analysis of submitted data across teams. This is the place for cross-team current-state reporting, not day-to-day run operations.
 
 ## Assessments page conventions
@@ -54,7 +72,7 @@
   - `Submitted`
 - `Create` should stay lightweight. The temporary `Run preview` block was intentionally removed because it duplicated the form.
 - `Create` now also supports:
-  - optional `ownerName`
+  - optional assigned `ownerUser`
   - optional `dueDate`
   - duplicate-run detection for the same team/template/period before launch
 - `Active` is the operational surface for draft/in-progress runs.
@@ -71,9 +89,10 @@
   - `Delete`
 - Active runs should be editable at the run-detail level for safe metadata only:
   - `title`
-  - `ownerName`
+  - `ownerUser`
   - `dueDate`
   - `periodLabel`
+- Individual run detail should expose assignment history when owner changes have occurred.
 - Submitted runs should remain read-only for run metadata edits.
 - Archived runs should remain visible in the Active tab as a separate section with a `Restore` action.
 - Restoring an archived run should return it to:
@@ -105,6 +124,14 @@
   - domain-based filtering
   - sort controls for detailed answer review
   - comment-focused review mode
+- Submitted results can now be shared through tokenized read-only links.
+- Share links should be revocable.
+- Share-link management should support expiry selection plus direct open/copy actions for active links.
+- PDF export in the current product means print-optimized export, not server-rendered PDF generation.
+- Excel export in the current product is CSV-based for spreadsheet compatibility.
+- Prefer multiple focused CSV exports over one overloaded export payload:
+  - results: domain summary and detailed answers
+  - reports: current rows and domain/question snapshot
 
 ## Reports section conventions
 
@@ -128,6 +155,7 @@
   - a stronger hero/header section is acceptable
   - summary cards can use more differentiated tones
   - filters and analytical snapshots should read as a reporting workspace, not as an operations table
+- Reports can support export actions, but they should remain analytical rather than operational.
 
 ## Current-state selection rule
 
@@ -165,7 +193,12 @@
 
 - PostgreSQL via Prisma.
 - Managed entities:
-  - `AdminUser`
+  - `User`
+  - `UserTeamMembership`
+  - `AssessmentRunAssignment`
+  - `ReportShareLink`
+  - `AuditLog`
+  - `Notification`
   - `Category`
   - `Team`
   - `TemplateDraft`
@@ -173,9 +206,13 @@
   - `DomainLibraryItem`
   - versioned template entities
 - `AssessmentRun` now also stores:
+  - `ownerUserId`
   - `ownerName`
   - `dueDate`
   - `submissionSummary`
+- `User` now also supports invite onboarding fields:
+  - `inviteToken`
+  - `inviteExpiresAt`
 - Template summaries/details should expose usage information so the UI can show whether a template is already in use.
 - Templates that are already used by assessment runs must not be deletable.
 - Template preview should surface recent usage context, not only version structure.
@@ -189,6 +226,20 @@
   - due-state filtering should support at least `Overdue`, `Due soon`, `Scheduled`, and `No due date`
   - the assessment run detail header should carry the same due-date urgency signal
 - Submitted-run filtering should go beyond the shared operational filters and support dedicated completed-run review fields such as submitted date range and score-band filtering.
+- Dashboard should expose a lightweight `My work` area sourced from assigned runs and team-visible active runs, without turning the page into a second assessments console.
+
+## Notifications and audit conventions
+
+- Notifications are currently in-app only.
+- Current notification scope includes:
+  - run assigned
+  - run reassigned
+  - run submitted
+  - due soon
+  - overdue
+- Notification UI should live in the shell, not as a separate heavy page.
+- Audit Trail is an admin-facing governance surface.
+- Audit logs should cover key auth, user, run, and report-share mutations.
 
 ## Dashboard conventions
 
@@ -198,6 +249,7 @@
   - `Active assessments`
   - `Submitted assessments`
 - Those quick links should remain visually distinct, but aligned with the current green/grey product palette rather than older amber/emerald styling notes.
+- Dashboard may include a compact `My work` section for the current signed-in user, but deeper workflow filtering still belongs in `Assessments`.
 - `Latest submitted by team` is an important compact dashboard section and should sit above broad trend charts so recent team state is easier to scan quickly.
 - Lightweight search inside `Latest submitted by team` is acceptable.
 - Deeper filtering/search belongs in `Assessments > Submitted` or a future dedicated `Reports` section, not in the Dashboard.
@@ -247,3 +299,6 @@
   - show domain completion clearly
   - let users jump to the first unanswered question
   - allow a submission summary note before final submit
+- Assessment-taking should support two modes:
+  - the existing matrix view
+  - a presentation-style full-screen collaborative answering mode with one-question-at-a-time navigation

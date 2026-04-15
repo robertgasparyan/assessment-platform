@@ -23,6 +23,32 @@ function formatDate(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+function startOfToday() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function getDueState(dueDate: string | null) {
+  if (!dueDate) {
+    return null;
+  }
+
+  const due = new Date(dueDate);
+  const today = startOfToday();
+  const diffDays = Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    return { label: "Overdue", variant: "secondary" as const };
+  }
+
+  if (diffDays <= 3) {
+    return { label: "Due soon", variant: "default" as const };
+  }
+
+  return { label: "Scheduled", variant: "outline" as const };
+}
+
 export function DashboardPage() {
   const [teamSearch, setTeamSearch] = useState("");
   const summaryQuery = useQuery({
@@ -96,6 +122,96 @@ export function DashboardPage() {
         <StatCard hint="Active collaborative drafts" label="Drafts" value={summary?.draftRuns ?? "-"} />
         <StatCard hint="Teams available for assignment" label="Teams" value={summary?.teams ?? "-"} />
       </div>
+
+      {summary ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>My work</CardTitle>
+            <CardDescription>
+              {summary.currentUser.role === "ADMIN" || summary.currentUser.role === "TEMPLATE_MANAGER"
+                ? "Your directly assigned active runs, plus team-owned work that still needs attention."
+                : "Active assessments assigned to you or visible through your team memberships."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">Assigned to me</div>
+                  <div className="text-sm text-muted-foreground">Runs where you are the explicit owner.</div>
+                </div>
+                <Badge variant="outline">{summary.myWork.assignedRuns.length}</Badge>
+              </div>
+              <div className="mt-4 space-y-3">
+                {summary.myWork.assignedRuns.length ? (
+                  summary.myWork.assignedRuns.map((run) => {
+                    const dueState = getDueState(run.dueDate);
+                    return (
+                      <div className="rounded-[1rem] border border-border/80 p-3" key={`assigned-${run.id}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <Link className="font-medium text-primary" to={`/assessments/${run.id}`} state={{ returnTo: "/assessments?tab=active" }}>
+                              {run.title}
+                            </Link>
+                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
+                          </div>
+                          <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                          <span>Due {formatDate(run.dueDate)}</span>
+                          {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                    No active runs are currently assigned to you.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">My team queue</div>
+                  <div className="text-sm text-muted-foreground">Other active runs visible through your team memberships.</div>
+                </div>
+                <Badge variant="outline">{summary.myWork.teamRuns.length}</Badge>
+              </div>
+              <div className="mt-4 space-y-3">
+                {summary.myWork.teamRuns.length ? (
+                  summary.myWork.teamRuns.map((run) => {
+                    const dueState = getDueState(run.dueDate);
+                    return (
+                      <div className="rounded-[1rem] border border-border/80 p-3" key={`team-${run.id}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <Link className="font-medium text-primary" to={`/assessments/${run.id}`} state={{ returnTo: "/assessments?tab=active" }}>
+                              {run.title}
+                            </Link>
+                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
+                          </div>
+                          <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                          <span>Due {formatDate(run.dueDate)}</span>
+                          {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                    No additional team runs currently need attention.
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>

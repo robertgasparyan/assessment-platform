@@ -6,6 +6,18 @@ It documents both supported approaches:
 - full dump/restore
 - plain SQL export/import
 
+The application now also includes admin-only export tools under `Administration > Data Model`:
+- portable JSON export
+- full JSON export
+- PostgreSQL dump download
+
+Use the in-app export tools when you want a guided download from the running product.
+Use the CLI commands in this guide when you want direct infrastructure-level control.
+
+Related admin notes:
+- `Administration > Data Model` contains the compact and visual relationship maps plus export tools.
+- `Administration > Configurations` contains AI provider settings, which are part of the application state stored in the database.
+
 ## When To Use Each Approach
 
 ### Full dump/restore
@@ -29,6 +41,35 @@ Use this when you want:
 Tools:
 - `pg_dump`
 - `psql`
+
+## In-App Export Notes
+
+### JSON export
+
+Two JSON modes are available in the admin UI:
+- `Portable JSON`
+  - redacts password hashes
+  - redacts active session tokens
+  - redacts invite tokens
+  - redacts report share tokens
+- `Full JSON`
+  - includes privileged backup fields
+  - should be handled like a sensitive backup artifact
+
+### PostgreSQL dump download
+
+The PostgreSQL dump button in the app depends on the backend being able to execute `pg_dump`.
+
+If the button is disabled:
+- install PostgreSQL client tools on the backend host
+- ensure `pg_dump` is on the system `PATH`
+- or set `PG_DUMP_PATH` in the root `.env` to the full executable path
+
+Example:
+
+```env
+PG_DUMP_PATH="C:\Program Files\PostgreSQL\17\bin\pg_dump.exe"
+```
 
 ## Source Database Example
 
@@ -198,6 +239,8 @@ Both approaches move the stored application data, including:
 - templates and versions
 - assessment runs
 - assessment responses
+- AI configuration stored in platform settings
+- cached AI brief records used for Results and Reports
 
 ## Verification Checklist
 

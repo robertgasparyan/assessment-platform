@@ -1,19 +1,24 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { clearAuthToken, getAuthToken, setAuthToken, subscribeToAuthChanges } from "@/lib/auth";
+import type { UserRole } from "@/types";
 
 type AuthUser = {
   id: string;
+  displayName: string;
   username: string;
+  role: UserRole;
 };
 
 type AuthContextValue = {
   user: AuthUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  mustChangePassword: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  activateAccount: (token: string, newPassword: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -21,11 +26,13 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 type AuthResponse = {
   token: string;
   user: AuthUser;
+  mustChangePassword?: boolean;
   sessionExpiresAt: string;
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -70,6 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const token = getAuthToken();
         if (!token) {
           setUser(null);
+          setMustChangePassword(false);
         }
       }),
     []
@@ -80,10 +88,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       isLoading,
       isAuthenticated: Boolean(user),
+      mustChangePassword,
       login: async (username, password) => {
         const response = await api.post<AuthResponse>("/auth/login", { username, password });
         setAuthToken(response.token);
         setUser(response.user);
+        setMustChangePassword(Boolean(response.mustChangePassword));
       },
       logout: async () => {
         try {
@@ -91,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } finally {
           clearAuthToken();
           setUser(null);
+          setMustChangePassword(false);
         }
       },
       changePassword: async (currentPassword, newPassword) => {
@@ -100,9 +111,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setAuthToken(response.token);
         setUser(response.user);
+        setMustChangePassword(false);
+      },
+      activateAccount: async (token, newPassword) => {
+        const response = await api.post<AuthResponse>("/auth/activate-account", {
+          token,
+          newPassword
+        });
+        setAuthToken(response.token);
+        setUser(response.user);
+        setMustChangePassword(false);
       }
     }),
-    [isLoading, user]
+    [isLoading, mustChangePassword, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

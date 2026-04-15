@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
@@ -12,6 +13,7 @@ import {
   Search,
   Plus,
   Save,
+  Sparkles,
   Trash2
 } from "lucide-react";
 import { toast } from "sonner";
@@ -24,11 +26,15 @@ import { Select } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { api } from "@/lib/api";
 import type {
   Category,
   Level,
   LibraryDomain,
   LibraryQuestion,
+  TemplateAiConsistencyReview,
+  TemplateAiDomainAssist,
+  TemplateAiQuestionAssist,
 } from "@/types";
 
 type StepId = "setup" | "compose" | "review";
@@ -83,6 +89,47 @@ function buildLevels(labels: string[], descriptions?: string[]): Level[] {
     label,
     description: descriptions?.[index] ?? ""
   }));
+}
+
+function normalizeString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeDraft(input: TemplateAuthoringDraft): TemplateAuthoringDraft {
+  const scoringLabels = input.scoringLabels.length
+    ? input.scoringLabels.map((label, index) => normalizeString(label) || `Level ${index + 1}`)
+    : [...defaultLabels];
+
+  return {
+    name: normalizeString(input.name),
+    slug: normalizeString(input.slug),
+    description: normalizeString(input.description),
+    category: normalizeString(input.category),
+    scoringLabels,
+    domains: (input.domains ?? []).map((domain, domainIndex) => ({
+      id: domain.id ?? createId("domain"),
+      title: normalizeString(domain.title),
+      description: normalizeString(domain.description),
+      libraryId: domain.libraryId,
+      questions: (domain.questions ?? []).map((question, questionIndex) => ({
+        id: question.id ?? createId("question"),
+        prompt: normalizeString(question.prompt),
+        guidance: normalizeString(question.guidance),
+        libraryId: question.libraryId,
+        levels:
+          question.levels?.length === scoringLabels.length
+            ? question.levels.map((level, levelIndex) => ({
+                value: typeof level.value === "number" ? level.value : levelIndex + 1,
+                label: normalizeString(level.label) || scoringLabels[levelIndex] || `Level ${levelIndex + 1}`,
+                description: normalizeString(level.description)
+              }))
+            : buildLevels(
+                scoringLabels,
+                scoringLabels.map((_label, levelIndex) => normalizeString(question.levels?.[levelIndex]?.description))
+              )
+      }))
+    }))
+  };
 }
 
 function createQuestion(labels: string[]): StudioQuestion {
@@ -144,20 +191,20 @@ function cloneDomain(domain: LibraryDomain | StudioDomain): StudioDomain {
 function validateDraft(draft: TemplateAuthoringDraft) {
   const issues: string[] = [];
 
-  if (!draft.name.trim()) issues.push("Template name is required.");
-  if (!draft.slug.trim()) issues.push("Template slug is required.");
+  if (!normalizeString(draft.name).trim()) issues.push("Template name is required.");
+  if (!normalizeString(draft.slug).trim()) issues.push("Template slug is required.");
   if (draft.domains.length === 0) issues.push("Add at least one domain.");
 
   draft.scoringLabels.forEach((label, index) => {
-    if (!label.trim()) issues.push(`Level ${index + 1} label is empty.`);
+    if (!normalizeString(label).trim()) issues.push(`Level ${index + 1} label is empty.`);
   });
 
   draft.domains.forEach((domain, domainIndex) => {
-    if (!domain.title.trim()) issues.push(`Domain ${domainIndex + 1} needs a title.`);
+    if (!normalizeString(domain.title).trim()) issues.push(`Domain ${domainIndex + 1} needs a title.`);
     if (domain.questions.length === 0) issues.push(`Domain "${domain.title || domainIndex + 1}" has no questions.`);
 
     domain.questions.forEach((question, questionIndex) => {
-      if (!question.prompt.trim()) {
+      if (!normalizeString(question.prompt).trim()) {
         issues.push(`Question ${questionIndex + 1} in "${domain.title || `Domain ${domainIndex + 1}`}" is empty.`);
       }
 
@@ -166,7 +213,7 @@ function validateDraft(draft: TemplateAuthoringDraft) {
       }
 
       question.levels.forEach((level) => {
-        if (!level.description.trim()) {
+        if (!normalizeString(level.description).trim()) {
           issues.push(`Question "${question.prompt || `#${questionIndex + 1}`}" is missing description for ${level.label}.`);
         }
       });
@@ -178,14 +225,14 @@ function validateDraft(draft: TemplateAuthoringDraft) {
 
 function isQuestionReadyForLibrary(question: StudioQuestion) {
   return Boolean(
-    question.prompt.trim() &&
+    normalizeString(question.prompt).trim() &&
       question.levels.length >= 2 &&
-      question.levels.every((level) => level.label.trim() && level.description.trim())
+      question.levels.every((level) => normalizeString(level.label).trim() && normalizeString(level.description).trim())
   );
 }
 
 function isDomainReadyForLibrary(domain: StudioDomain) {
-  return Boolean(domain.title.trim() && domain.questions.length > 0 && domain.questions.every(isQuestionReadyForLibrary));
+  return Boolean(normalizeString(domain.title).trim() && domain.questions.length > 0 && domain.questions.every(isQuestionReadyForLibrary));
 }
 
 export function TemplateAuthoringStudio({
@@ -207,7 +254,8 @@ export function TemplateAuthoringStudio({
   submitLabel,
   title,
   description,
-  submitting
+  submitting,
+  aiEnabled
 }: {
   initialDraft?: TemplateAuthoringDraft;
   initialDraftId?: string | null;
@@ -228,9 +276,10 @@ export function TemplateAuthoringStudio({
   title?: string;
   description?: string;
   submitting?: boolean;
+  aiEnabled?: boolean;
 }) {
   const [step, setStep] = useState<StepId>("setup");
-  const [draft, setDraft] = useState<TemplateAuthoringDraft>(initialDraft ?? createTemplateDraft());
+  const [draft, setDraft] = useState<TemplateAuthoringDraft>(initialDraft ? normalizeDraft(initialDraft) : createTemplateDraft());
   const [slugManuallyEdited, setSlugManuallyEdited] = useState(Boolean(initialDraft?.slug));
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(draft.domains[0]?.id ?? null);
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(draft.domains[0]?.questions[0]?.id ?? null);
@@ -239,13 +288,17 @@ export function TemplateAuthoringStudio({
   const [domainSearch, setDomainSearch] = useState("");
   const [questionSearch, setQuestionSearch] = useState("");
   const [composePanelTab, setComposePanelTab] = useState("editor");
+  const [lastQuestionAssist, setLastQuestionAssist] = useState<TemplateAiQuestionAssist | null>(null);
+  const [lastDomainAssist, setLastDomainAssist] = useState<TemplateAiDomainAssist | null>(null);
+  const [lastConsistencyReview, setLastConsistencyReview] = useState<TemplateAiConsistencyReview | null>(null);
 
   useEffect(() => {
     if (initialDraft) {
-      setDraft(initialDraft);
-      setSlugManuallyEdited(Boolean(initialDraft.slug));
-      setSelectedDomainId(initialDraft.domains[0]?.id ?? null);
-      setEditingQuestionId(initialDraft.domains[0]?.questions[0]?.id ?? null);
+      const normalized = normalizeDraft(initialDraft);
+      setDraft(normalized);
+      setSlugManuallyEdited(Boolean(normalized.slug));
+      setSelectedDomainId(normalized.domains[0]?.id ?? null);
+      setEditingQuestionId(normalized.domains[0]?.questions[0]?.id ?? null);
     }
   }, [initialDraft, initialDraftId]);
 
@@ -272,6 +325,14 @@ export function TemplateAuthoringStudio({
       setSelectedDomainId(draft.domains[0].id);
     }
   }, [draft.domains, selectedDomainId]);
+
+  useEffect(() => {
+    setLastDomainAssist(null);
+  }, [selectedDomainId]);
+
+  useEffect(() => {
+    setLastQuestionAssist(null);
+  }, [editingQuestionId]);
 
   const selectedDomain = draft.domains.find((domain) => domain.id === selectedDomainId) ?? null;
   const editingQuestion = selectedDomain?.questions.find((question) => question.id === editingQuestionId) ?? null;
@@ -310,6 +371,50 @@ export function TemplateAuthoringStudio({
   };
 
   const totalQuestions = draft.domains.reduce((sum, domain) => sum + domain.questions.length, 0);
+  const questionAssistMutation = useMutation({
+    mutationFn: () =>
+      api.post<TemplateAiQuestionAssist>("/templates/ai/question-assist", {
+        templateName: draft.name,
+        domainTitle: selectedDomain?.title ?? "",
+        scoringLabels: draft.scoringLabels,
+        prompt: editingQuestion?.prompt ?? "",
+        guidance: editingQuestion?.guidance ?? "",
+        levels: editingQuestion?.levels ?? []
+      }),
+    onSuccess: (data) => setLastQuestionAssist(data),
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const domainAssistMutation = useMutation({
+    mutationFn: () =>
+      api.post<TemplateAiDomainAssist>("/templates/ai/domain-assist", {
+        templateName: draft.name,
+        domainTitle: selectedDomain?.title ?? "",
+        description: selectedDomain?.description ?? "",
+        questionPrompts: selectedDomain?.questions.map((question) => question.prompt) ?? []
+      }),
+    onSuccess: (data) => setLastDomainAssist(data),
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const consistencyReviewMutation = useMutation({
+    mutationFn: () =>
+      api.post<TemplateAiConsistencyReview>("/templates/ai/consistency-review", {
+        templateName: draft.name,
+        templateDescription: draft.description,
+        category: draft.category,
+        scoringLabels: draft.scoringLabels,
+        domains: draft.domains.map((domain) => ({
+          title: domain.title,
+          description: domain.description ?? "",
+          questions: domain.questions.map((question) => ({
+            prompt: question.prompt,
+            guidance: question.guidance ?? "",
+            levels: question.levels
+          }))
+        }))
+      }),
+    onSuccess: (data) => setLastConsistencyReview(data),
+    onError: (error: Error) => toast.error(error.message)
+  });
 
   return (
     <div className="space-y-6">
@@ -692,6 +797,17 @@ export function TemplateAuthoringStudio({
                         <Plus className="mr-2 h-4 w-4" />
                         New question
                       </Button>
+                      {aiEnabled ? (
+                        <Button
+                          disabled={domainAssistMutation.isPending}
+                          onClick={() => domainAssistMutation.mutate()}
+                          type="button"
+                          variant="outline"
+                        >
+                          <Sparkles className="mr-2 h-4 w-4" />
+                          {domainAssistMutation.isPending ? "Refining..." : "AI refine domain"}
+                        </Button>
+                      ) : null}
                       <Button
                         disabled={!canSaveSelectedDomainToLibrary}
                         onClick={() => {
@@ -743,6 +859,49 @@ export function TemplateAuthoringStudio({
                         </Button>
                       ) : null}
                     </div>
+                    {lastDomainAssist ? (
+                      <div className="rounded-[1.25rem] border border-primary/20 bg-primary/5 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-sm font-semibold text-foreground">AI domain suggestion</div>
+                          {lastDomainAssist.providerLabel ? <Badge variant="outline">{lastDomainAssist.providerLabel}</Badge> : null}
+                          <Badge variant="outline">Manual apply</Badge>
+                        </div>
+                        <div className="mt-3 grid gap-3">
+                          <div>
+                            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Suggested title</div>
+                            <div className="mt-1 font-medium">{lastDomainAssist.suggestedTitle}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Suggested description</div>
+                            <div className="mt-1 text-sm text-foreground">{lastDomainAssist.rewrittenDescription}</div>
+                          </div>
+                          <div className="space-y-2">
+                            {lastDomainAssist.notes.map((note, index) => (
+                              <div className="rounded-xl bg-white/80 px-3 py-2 text-sm text-muted-foreground" key={`domain-note-${index}`}>
+                                {note}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            <Button
+                              onClick={() =>
+                                updateSelectedDomain((domain) => ({
+                                  ...domain,
+                                  title: lastDomainAssist.suggestedTitle,
+                                  description: lastDomainAssist.rewrittenDescription
+                                }))
+                              }
+                              type="button"
+                            >
+                              Apply suggestion
+                            </Button>
+                            <Button onClick={() => setLastDomainAssist(null)} type="button" variant="ghost">
+                              Dismiss
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </CardContent>
                 </Card>
 
@@ -935,6 +1094,17 @@ export function TemplateAuthoringStudio({
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-3">
+                          {aiEnabled ? (
+                            <Button
+                              disabled={questionAssistMutation.isPending}
+                              onClick={() => questionAssistMutation.mutate()}
+                              type="button"
+                              variant="outline"
+                            >
+                              <Sparkles className="mr-2 h-4 w-4" />
+                              {questionAssistMutation.isPending ? "Improving..." : "AI improve question"}
+                            </Button>
+                          ) : null}
                           <Button
                             disabled={!canSaveEditingQuestionToLibrary}
                             onClick={() => {
@@ -979,6 +1149,58 @@ export function TemplateAuthoringStudio({
                             </Button>
                           ) : null}
                         </div>
+                        {lastQuestionAssist ? (
+                          <div className="rounded-[1.25rem] border border-primary/20 bg-primary/5 p-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-semibold text-foreground">AI question suggestion</div>
+                              {lastQuestionAssist.providerLabel ? <Badge variant="outline">{lastQuestionAssist.providerLabel}</Badge> : null}
+                              <Badge variant="outline">Manual apply</Badge>
+                            </div>
+                            <div className="mt-3 space-y-3">
+                              <div>
+                                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Improved prompt</div>
+                                <div className="mt-1 font-medium text-foreground">{lastQuestionAssist.rewrittenPrompt}</div>
+                              </div>
+                              <div>
+                                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Draft guidance</div>
+                                <div className="mt-1 text-sm text-foreground">{lastQuestionAssist.guidance}</div>
+                              </div>
+                              <div className="grid gap-2">
+                                {lastQuestionAssist.levels.map((level) => (
+                                  <div className="rounded-xl bg-white/80 px-3 py-3 text-sm" key={`ai-level-${level.value}`}>
+                                    <div className="font-medium">{level.label}</div>
+                                    <div className="mt-1 text-muted-foreground">{level.description}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="space-y-2">
+                                {lastQuestionAssist.notes.map((note, index) => (
+                                  <div className="rounded-xl bg-white/80 px-3 py-2 text-sm text-muted-foreground" key={`question-note-${index}`}>
+                                    {note}
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="flex flex-wrap gap-3">
+                                <Button
+                                  onClick={() =>
+                                    updateEditingQuestion((question) => ({
+                                      ...question,
+                                      prompt: lastQuestionAssist.rewrittenPrompt,
+                                      guidance: lastQuestionAssist.guidance,
+                                      levels: lastQuestionAssist.levels.map((level) => ({ ...level }))
+                                    }))
+                                  }
+                                  type="button"
+                                >
+                                  Apply suggestion
+                                </Button>
+                                <Button onClick={() => setLastQuestionAssist(null)} type="button" variant="ghost">
+                                  Dismiss
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="rounded-[1.25rem] border bg-muted/20 p-8 text-sm text-muted-foreground">
@@ -1129,6 +1351,61 @@ export function TemplateAuthoringStudio({
               <CardDescription>Resolve the issues below before saving a new version.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {aiEnabled ? (
+                <div className="rounded-[1.25rem] border border-primary/20 bg-primary/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">AI consistency review</div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        Optional review for wording consistency, level progression, and overlap across the draft.
+                      </div>
+                    </div>
+                    <Button disabled={consistencyReviewMutation.isPending} onClick={() => consistencyReviewMutation.mutate()} type="button" variant="outline">
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      {consistencyReviewMutation.isPending ? "Reviewing..." : "Run AI review"}
+                    </Button>
+                  </div>
+                  {lastConsistencyReview ? (
+                    <div className="mt-4 space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {lastConsistencyReview.providerLabel ? <Badge variant="outline">{lastConsistencyReview.providerLabel}</Badge> : null}
+                        <Badge variant="outline">Draft-only review</Badge>
+                      </div>
+                      <div className="rounded-xl bg-white/85 p-3 text-sm text-foreground">{lastConsistencyReview.summary}</div>
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Strengths</div>
+                        <div className="mt-2 space-y-2">
+                          {lastConsistencyReview.strengths.map((item, index) => (
+                            <div className="rounded-xl bg-accent/70 px-3 py-2 text-sm text-foreground" key={`consistency-strength-${index}`}>
+                              {item}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Issues</div>
+                        <div className="mt-2 space-y-2">
+                          {lastConsistencyReview.issues.map((item, index) => (
+                            <div className="rounded-xl bg-secondary px-3 py-2 text-sm text-foreground" key={`consistency-issue-${index}`}>
+                              {item}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Suggestions</div>
+                        <div className="mt-2 space-y-2">
+                          {lastConsistencyReview.suggestions.map((item, index) => (
+                            <div className="rounded-xl border border-primary/15 bg-white/85 px-3 py-2 text-sm text-foreground" key={`consistency-suggestion-${index}`}>
+                              {item}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {issues.length === 0 ? (
                 <div className="rounded-[1.25rem] border border-primary/20 bg-accent p-4 text-sm text-foreground">
                   No blocking issues found. This template is ready to publish.

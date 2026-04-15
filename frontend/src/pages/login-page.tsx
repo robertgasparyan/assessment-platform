@@ -36,7 +36,7 @@ export function LoginPage() {
           </div>
           <div>
             <div className="text-sm font-medium text-muted-foreground">Assessment Platform v1.0</div>
-            <h1 className="text-2xl font-semibold text-foreground">Admin login</h1>
+            <h1 className="text-2xl font-semibold text-foreground">Sign in</h1>
           </div>
         </div>
 
@@ -46,7 +46,7 @@ export function LoginPage() {
             <Input
               id="username"
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="Enter admin username"
+              placeholder="Enter username"
               value={username}
             />
           </div>

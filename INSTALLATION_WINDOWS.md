@@ -62,7 +62,14 @@ Create root `.env` from [`.env.example`](C:/Users/Robert%20Gasparyan/Documents/D
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/assessment_platform?schema=public"
 PORT=4000
 CLIENT_URL="http://localhost:5173"
+AI_CONFIG_ENCRYPTION_KEY="replace-with-a-long-random-secret"
+OLLAMA_BASE_URL="http://192.168.1.1:11434"
+OLLAMA_MODEL="gpt-oss:20b"
 ```
+
+Optional:
+- set `PG_DUMP_PATH` if `pg_dump.exe` is not on your `PATH`
+- add hosted-provider API keys only if you plan to use `OpenAI`, `Claude`, or `Gemini`
 
 Create `frontend/.env` from [frontend/.env.example](C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/frontend/.env.example):
 
@@ -129,6 +136,7 @@ Root `.env`:
 DATABASE_URL="postgresql://db_user:db_password@db_host:5432/assessment_platform?schema=public"
 PORT=4000
 CLIENT_URL="https://your-frontend-domain.com"
+AI_CONFIG_ENCRYPTION_KEY="replace-with-a-long-random-secret"
 ```
 
 Create `frontend/.env.production`:
@@ -211,6 +219,7 @@ Then verify:
 - Assessments loads
 - Templates loads
 - Reports loads
+- Administration AI configuration loads when logged in as admin
 
 ## 9. Troubleshooting
 
