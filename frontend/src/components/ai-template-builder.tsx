@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { createClientId } from "@/lib/create-id";
 import type {
   Category,
   TemplateAiDomainQuestions,
@@ -39,7 +40,7 @@ type BuilderDomain = {
 };
 
 function createId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
+  return createClientId(prefix);
 }
 
 export function AiTemplateBuilder({

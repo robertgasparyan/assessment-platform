@@ -27,6 +27,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { createClientId } from "@/lib/create-id";
 import type {
   Category,
   Level,
@@ -72,7 +73,7 @@ export type TemplateAuthoringDraft = {
 const defaultLabels = ["Initial", "Developing", "Intermediate", "Advanced", "Optimized"];
 
 function createId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
+  return createClientId(prefix);
 }
 
 function slugify(value: string) {
