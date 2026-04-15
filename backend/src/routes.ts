@@ -2739,7 +2739,7 @@ router.post("/assessment-runs/:id/archive", async (request, response) => {
     return response.status(404).json({ message: "Assessment run not found" });
   }
 
-  if (run.status === AssessmentRunStatus.SUBMITTED) {
+  if (run.status === AssessmentRunStatus.SUBMITTED && request.adminUser!.role !== UserRole.ADMIN) {
     return response.status(400).json({ message: "Submitted runs cannot be archived from this action." });
   }
 
@@ -2783,7 +2783,11 @@ router.post("/assessment-runs/:id/unarchive", async (request, response) => {
   const updated = await prisma.assessmentRun.update({
     where: { id: runId },
     data: {
-      status: run.responses.length > 0 ? AssessmentRunStatus.IN_PROGRESS : AssessmentRunStatus.DRAFT
+      status: run.submittedAt
+        ? AssessmentRunStatus.SUBMITTED
+        : run.responses.length > 0
+          ? AssessmentRunStatus.IN_PROGRESS
+          : AssessmentRunStatus.DRAFT
     }
   });
 
@@ -2812,7 +2816,7 @@ router.delete("/assessment-runs/:id", async (request, response) => {
     return response.status(404).json({ message: "Assessment run not found" });
   }
 
-  if (run.status === AssessmentRunStatus.SUBMITTED) {
+  if (run.status === AssessmentRunStatus.SUBMITTED && request.adminUser!.role !== UserRole.ADMIN) {
     return response.status(400).json({ message: "Submitted runs cannot be deleted." });
   }
 

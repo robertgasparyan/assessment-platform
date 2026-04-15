@@ -73,6 +73,31 @@ function truncateMiddle(value: string, maxLength = 72) {
   return `${value.slice(0, startLength)}...${value.slice(-endLength)}`;
 }
 
+function buildAbsoluteShareUrl(shareUrl: string) {
+  if (/^https?:\/\//i.test(shareUrl)) {
+    return shareUrl;
+  }
+
+  return new URL(shareUrl, window.location.origin).toString();
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
 function deltaTone(value: number | null | undefined) {
   if (typeof value !== "number" || value === 0) {
     return "outline" as const;
@@ -280,8 +305,8 @@ export function ResultsPage() {
       }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["assessment-share-links", runId] });
-      const fullUrl = `${window.location.origin}${created.shareUrl}`;
-      await navigator.clipboard.writeText(fullUrl);
+      const fullUrl = buildAbsoluteShareUrl(created.shareUrl);
+      await copyTextToClipboard(fullUrl);
       toast.success("Share link created and copied");
     },
     onError: (error) => {
@@ -1728,8 +1753,8 @@ export function ResultsPage() {
                         return (
                           <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border bg-white px-3 py-3" key={link.id}>
                             <div className="min-w-0 flex-1 space-y-1">
-                              <div className="text-sm font-medium leading-5" title={`${window.location.origin}${link.shareUrl}`}>
-                                {truncateMiddle(`${window.location.origin}${link.shareUrl}`)}
+                              <div className="text-sm font-medium leading-5" title={buildAbsoluteShareUrl(link.shareUrl)}>
+                                {truncateMiddle(buildAbsoluteShareUrl(link.shareUrl))}
                               </div>
                               <div className="text-xs text-muted-foreground">
                                 {formatDate(link.createdAt)} · {link.expiresAt ? `Expires ${formatDate(link.expiresAt)}` : "No expiry"}
@@ -1743,7 +1768,7 @@ export function ResultsPage() {
                                 <>
                                   <Button
                                     className="h-8 w-8 p-0"
-                                    onClick={() => window.open(`${window.location.origin}${link.shareUrl}`, "_blank", "noopener,noreferrer")}
+                                    onClick={() => window.open(buildAbsoluteShareUrl(link.shareUrl), "_blank", "noopener,noreferrer")}
                                     type="button"
                                     variant="outline"
                                   >
@@ -1753,7 +1778,7 @@ export function ResultsPage() {
                                   <Button
                                     className="h-8 w-8 p-0"
                                     onClick={async () => {
-                                      await navigator.clipboard.writeText(`${window.location.origin}${link.shareUrl}`);
+                                      await copyTextToClipboard(buildAbsoluteShareUrl(link.shareUrl));
                                       toast.success("Share link copied");
                                     }}
                                     type="button"

@@ -175,6 +175,16 @@ function RunTable({
                     Delete
                   </Button>
                 ) : null}
+                {submittedView && run.status !== "ARCHIVED" && onArchive ? (
+                  <Button onClick={() => onArchive(run)} size="sm" type="button" variant="outline">
+                    Archive
+                  </Button>
+                ) : null}
+                {submittedView && run.status !== "ARCHIVED" && onDelete ? (
+                  <Button onClick={() => onDelete(run)} size="sm" type="button" variant="ghost">
+                    Remove
+                  </Button>
+                ) : null}
                 {!submittedView && run.status === "ARCHIVED" && onRestore ? (
                   <Button onClick={() => onRestore(run)} size="sm" type="button" variant="outline">
                     Restore
@@ -649,18 +659,26 @@ export function AssessmentsPage() {
     ? pendingRunAction.type === "archive"
       ? {
           title: "Archive assessment run?",
-          description: "The run will move out of the active list but can still be restored later without losing saved responses.",
+          description:
+            pendingRunAction.run.status === "SUBMITTED"
+              ? "The submitted run will move out of the submitted list and into archived history. An admin can restore it later without changing the submitted data."
+              : "The run will move out of the active list but can still be restored later without losing saved responses.",
           confirmLabel: "Archive run"
         }
       : pendingRunAction.type === "delete"
         ? {
-            title: "Delete assessment run?",
-            description: "This permanently removes the draft run and all saved responses. This action cannot be undone.",
-            confirmLabel: "Delete run"
+            title: pendingRunAction.run.status === "SUBMITTED" ? "Remove submitted run?" : "Delete assessment run?",
+            description:
+              pendingRunAction.run.status === "SUBMITTED"
+                ? "This permanently removes the submitted run, its responses, and related sharing history. This action cannot be undone."
+                : "This permanently removes the draft run and all saved responses. This action cannot be undone.",
+            confirmLabel: pendingRunAction.run.status === "SUBMITTED" ? "Remove run" : "Delete run"
           }
         : {
             title: "Restore assessment run?",
-            description: "The run will return to the active list and can be continued from its previous draft state.",
+            description: pendingRunAction.run.submittedAt
+              ? "The archived submitted run will return to the submitted list."
+              : "The run will return to the active list and can be continued from its previous draft state.",
             confirmLabel: "Restore run"
           }
     : null;
@@ -897,6 +915,8 @@ export function AssessmentsPage() {
               {submittedFilterBlock}
               <RunTable
                 emptyMessage="No submitted runs match the current filters."
+                onArchive={user?.role === "ADMIN" ? (run) => setPendingRunAction({ type: "archive", run }) : undefined}
+                onDelete={user?.role === "ADMIN" ? (run) => setPendingRunAction({ type: "delete", run }) : undefined}
                 runs={filteredSubmittedRuns}
                 submittedView={true}
               />
