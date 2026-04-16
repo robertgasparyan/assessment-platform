@@ -337,6 +337,12 @@ export function TemplateAuthoringStudio({
 
   const selectedDomain = draft.domains.find((domain) => domain.id === selectedDomainId) ?? null;
   const editingQuestion = selectedDomain?.questions.find((question) => question.id === editingQuestionId) ?? null;
+  const editingQuestionHasContent = Boolean(
+    editingQuestion &&
+      (normalizeString(editingQuestion.prompt).trim() ||
+        normalizeString(editingQuestion.guidance).trim() ||
+        editingQuestion.levels.some((level) => normalizeString(level.description).trim()))
+  );
   const issues = useMemo(() => validateDraft(draft), [draft]);
   const canSaveSelectedDomainToLibrary = selectedDomain ? isDomainReadyForLibrary(selectedDomain) : false;
   const canSaveEditingQuestionToLibrary = editingQuestion ? isQuestionReadyForLibrary(editingQuestion) : false;
@@ -373,16 +379,53 @@ export function TemplateAuthoringStudio({
 
   const totalQuestions = draft.domains.reduce((sum, domain) => sum + domain.questions.length, 0);
   const questionAssistMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: ({
+      questionId,
+      prompt,
+      guidance,
+      levels,
+      autoApply
+    }: {
+      questionId: string;
+      prompt: string;
+      guidance?: string;
+      levels: Level[];
+      autoApply?: boolean;
+    }) =>
       api.post<TemplateAiQuestionAssist>("/templates/ai/question-assist", {
         templateName: draft.name,
         domainTitle: selectedDomain?.title ?? "",
         scoringLabels: draft.scoringLabels,
-        prompt: editingQuestion?.prompt ?? "",
-        guidance: editingQuestion?.guidance ?? "",
-        levels: editingQuestion?.levels ?? []
+        prompt,
+        guidance: guidance ?? "",
+        levels
       }),
-    onSuccess: (data) => setLastQuestionAssist(data),
+    onSuccess: (data, variables) => {
+      setEditingQuestionId(variables.questionId);
+      setLastQuestionAssist(data);
+
+      if (!variables.autoApply) {
+        return;
+      }
+
+      setDraft((current) => ({
+        ...current,
+        domains: current.domains.map((domain) => ({
+          ...domain,
+          questions: domain.questions.map((question) =>
+            question.id === variables.questionId
+              ? {
+                  ...question,
+                  prompt: data.rewrittenPrompt,
+                  guidance: data.guidance,
+                  levels: data.levels.map((level) => ({ ...level }))
+                }
+              : question
+          )
+        }))
+      }));
+      toast.success("AI question draft generated");
+    },
     onError: (error: Error) => toast.error(error.message)
   });
   const domainAssistMutation = useMutation({
@@ -800,6 +843,29 @@ export function TemplateAuthoringStudio({
                       </Button>
                       {aiEnabled ? (
                         <Button
+                          disabled={questionAssistMutation.isPending}
+                          onClick={() => {
+                            const question = createQuestion(draft.scoringLabels);
+                            updateSelectedDomain((domain) => ({ ...domain, questions: [...domain.questions, question] }));
+                            setEditingQuestionId(question.id);
+                            setComposePanelTab("editor");
+                            questionAssistMutation.mutate({
+                              questionId: question.id,
+                              prompt: "",
+                              guidance: "",
+                              levels: question.levels.map((level) => ({ ...level })),
+                              autoApply: true
+                            });
+                          }}
+                          type="button"
+                          variant="outline"
+                        >
+                          <Sparkles className="mr-2 h-4 w-4" />
+                          {questionAssistMutation.isPending ? "Generating..." : "AI generate question"}
+                        </Button>
+                      ) : null}
+                      {aiEnabled ? (
+                        <Button
                           disabled={domainAssistMutation.isPending}
                           onClick={() => domainAssistMutation.mutate()}
                           type="button"
@@ -1098,12 +1164,25 @@ export function TemplateAuthoringStudio({
                           {aiEnabled ? (
                             <Button
                               disabled={questionAssistMutation.isPending}
-                              onClick={() => questionAssistMutation.mutate()}
+                              onClick={() =>
+                                questionAssistMutation.mutate({
+                                  questionId: editingQuestion.id,
+                                  prompt: editingQuestion.prompt,
+                                  guidance: editingQuestion.guidance,
+                                  levels: editingQuestion.levels.map((level) => ({ ...level }))
+                                })
+                              }
                               type="button"
                               variant="outline"
                             >
                               <Sparkles className="mr-2 h-4 w-4" />
-                              {questionAssistMutation.isPending ? "Improving..." : "AI improve question"}
+                              {questionAssistMutation.isPending
+                                ? editingQuestionHasContent
+                                  ? "Improving..."
+                                  : "Generating..."
+                                : editingQuestionHasContent
+                                  ? "AI improve question"
+                                  : "AI generate question"}
                             </Button>
                           ) : null}
                           <Button

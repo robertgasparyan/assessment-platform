@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Check, Expand, Minimize, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import type { AssessmentRunDetail } from "@/types";
 
@@ -58,8 +59,44 @@ export function AssessmentPresentationMode({
   const current = flattenedQuestions[safeIndex];
   const currentResponse = current ? responses[current.question.id] : undefined;
   const answeredCount = flattenedQuestions.filter((item) => responses[item.question.id]?.selectedValue).length;
+  const unansweredCount = Math.max(flattenedQuestions.length - answeredCount, 0);
   const progressPercent = flattenedQuestions.length ? Math.round((answeredCount / flattenedQuestions.length) * 100) : 0;
   const nextUnansweredIndex = flattenedQuestions.findIndex((item) => !responses[item.question.id]?.selectedValue);
+  const currentDomainQuestions = useMemo(
+    () => flattenedQuestions.filter((item) => item.domainId === current?.domainId),
+    [current?.domainId, flattenedQuestions]
+  );
+  const currentDomainAnsweredCount = currentDomainQuestions.filter((item) => responses[item.question.id]?.selectedValue).length;
+  const currentDomainProgressPercent = currentDomainQuestions.length
+    ? Math.round((currentDomainAnsweredCount / currentDomainQuestions.length) * 100)
+    : 0;
+  const nextUnansweredInDomain = currentDomainQuestions.find((item) => !responses[item.question.id]?.selectedValue) ?? null;
+  const nextUnansweredInDomainIndex = nextUnansweredInDomain
+    ? flattenedQuestions.findIndex((item) => item.question.id === nextUnansweredInDomain.question.id)
+    : -1;
+  const domainAgenda = useMemo(
+    () =>
+      run.domains.map((domain) => {
+        const domainQuestions = flattenedQuestions.filter((item) => item.domainId === domain.id);
+        const answered = domainQuestions.filter((item) => responses[item.question.id]?.selectedValue).length;
+        const firstQuestionIndex = flattenedQuestions.findIndex((item) => item.domainId === domain.id);
+        const firstUnansweredIndex = flattenedQuestions.findIndex(
+          (item) => item.domainId === domain.id && !responses[item.question.id]?.selectedValue
+        );
+
+        return {
+          id: domain.id,
+          title: domain.title,
+          answered,
+          total: domainQuestions.length,
+          progressPercent: domainQuestions.length ? Math.round((answered / domainQuestions.length) * 100) : 0,
+          isCurrent: domain.id === current?.domainId,
+          firstQuestionIndex,
+          firstUnansweredIndex
+        };
+      }),
+    [current?.domainId, flattenedQuestions, responses, run.domains]
+  );
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -122,6 +159,9 @@ export function AssessmentPresentationMode({
                 <span>
                   Question {safeIndex + 1} of {flattenedQuestions.length}
                 </span>
+                <Badge variant={unansweredCount ? "secondary" : "success"}>
+                  {unansweredCount ? `${unansweredCount} unanswered` : "All answered"}
+                </Badge>
               </div>
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">{current.domainTitle}</div>
@@ -152,7 +192,7 @@ export function AssessmentPresentationMode({
             <div className="flex items-center justify-between text-xs uppercase tracking-[0.14em] text-muted-foreground">
               <span>Overall progress</span>
               <span>
-                {answeredCount}/{flattenedQuestions.length} answered · {progressPercent}%
+                {answeredCount}/{flattenedQuestions.length} answered · {unansweredCount} remaining · {progressPercent}%
               </span>
             </div>
             <div className="h-2.5 rounded-full bg-muted">
@@ -161,7 +201,58 @@ export function AssessmentPresentationMode({
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-6 overflow-hidden px-6 py-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid min-h-0 flex-1 gap-6 overflow-hidden px-6 py-6 xl:grid-cols-[280px_minmax(0,1fr)_360px]">
+          <div className="min-h-0 overflow-auto rounded-[2rem] border border-border/80 bg-white p-5 shadow-sm">
+            <div className="space-y-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Domain agenda</div>
+                <div className="mt-2 text-lg font-semibold text-foreground">Facilitator view</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Stay oriented across domains and jump directly to the next topic gap.
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {domainAgenda.map((domain) => (
+                  <button
+                    className={`w-full rounded-[1.35rem] border p-4 text-left transition ${
+                      domain.isCurrent
+                        ? "border-primary bg-primary/8 shadow-sm"
+                        : "border-border/80 bg-white hover:border-primary/30 hover:bg-primary/5"
+                    }`}
+                    key={domain.id}
+                    onClick={() =>
+                      onActiveIndexChange(
+                        domain.firstUnansweredIndex >= 0
+                          ? domain.firstUnansweredIndex
+                          : Math.max(domain.firstQuestionIndex, 0)
+                      )
+                    }
+                    type="button"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-foreground">{domain.title}</div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {domain.answered}/{domain.total} answered
+                        </div>
+                      </div>
+                      <Badge variant={domain.answered === domain.total ? "success" : domain.isCurrent ? "default" : "secondary"}>
+                        {domain.answered === domain.total ? "Done" : domain.isCurrent ? "Current" : "Open"}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 h-2 rounded-full bg-muted">
+                      <div className="h-2 rounded-full bg-primary transition-all" style={{ width: `${domain.progressPercent}%` }} />
+                    </div>
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      {domain.firstUnansweredIndex >= 0 ? "Jump to next unanswered in this domain" : "All questions in this domain are answered"}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <div className="min-h-0 overflow-auto rounded-[2rem] border border-border/80 bg-white p-6 shadow-sm">
             <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
               {current.question.levels.map((level) => {
@@ -198,12 +289,40 @@ export function AssessmentPresentationMode({
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Domain progress</div>
                 <div className="mt-2 text-lg font-semibold text-foreground">
-                  {current.domainTitle} · {current.answeredQuestions}/{current.totalQuestions} answered
+                  {current.domainTitle} · {currentDomainAnsweredCount}/{currentDomainQuestions.length} answered
                 </div>
                 {current.domainDescription ? (
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">{current.domainDescription}</p>
                 ) : null}
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-[0.14em] text-muted-foreground">
+                    <span>Current domain</span>
+                    <span>{currentDomainProgressPercent}% complete</span>
+                  </div>
+                  <div className="h-2.5 rounded-full bg-muted">
+                    <div className="h-2.5 rounded-full bg-primary transition-all" style={{ width: `${currentDomainProgressPercent}%` }} />
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Badge variant="outline">{currentDomainQuestions.length} questions in domain</Badge>
+                  <Badge variant={nextUnansweredInDomain ? "secondary" : "success"}>
+                    {nextUnansweredInDomain ? "Domain still has gaps" : "Domain complete"}
+                  </Badge>
+                </div>
               </div>
+
+              {nextUnansweredInDomainIndex >= 0 ? (
+                <div className="rounded-[1.5rem] border border-primary/20 bg-primary/5 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Recommended next step</div>
+                  <div className="mt-2 text-sm text-foreground">
+                    Jump to the next unanswered question in this domain to keep the discussion moving in one topic area.
+                  </div>
+                  <Button className="mt-4 w-full" onClick={() => onActiveIndexChange(nextUnansweredInDomainIndex)} type="button" variant="outline">
+                    <SkipForward className="mr-2 h-4 w-4" />
+                    Next unanswered in domain
+                  </Button>
+                </div>
+              ) : null}
 
               <div className="space-y-2">
                 <div className="text-sm font-medium text-foreground">Collaborative note</div>
@@ -220,6 +339,9 @@ export function AssessmentPresentationMode({
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Selected answer</div>
                 <div className="mt-2 text-lg font-semibold text-foreground">
                   {currentResponse ? `${currentResponse.selectedLabel} (${currentResponse.selectedValue})` : "Nothing selected yet"}
+                </div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {currentResponse ? "This selection is already part of the live run draft." : "Pick a maturity level to move this question into the answered set."}
                 </div>
               </div>
 
@@ -249,6 +371,11 @@ export function AssessmentPresentationMode({
 
               <div className="space-y-2">
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Question navigator</div>
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-primary">Answered</span>
+                  <span className="rounded-full border border-border/80 bg-white px-2.5 py-1">Unanswered</span>
+                  <span className="rounded-full bg-primary px-2.5 py-1 text-primary-foreground">Current</span>
+                </div>
                 <div className="grid grid-cols-5 gap-2">
                   {flattenedQuestions.map((item, index) => {
                     const selected = index === safeIndex;

@@ -4,6 +4,9 @@ import { config } from "../config.js";
 
 const REPORT_EMAIL_DELIVERY_KEY = "report_email_delivery";
 const SMTP_CONFIGURATION_KEY = "smtp_configuration";
+const APPLICATION_BRANDING_KEY = "application_branding";
+const NAVIGATION_SEARCH_KEY = "navigation_search";
+const DEFAULT_APPLICATION_TITLE = "Assessment Platform";
 
 type ReportEmailDeliverySettingValue = {
   enabled?: boolean;
@@ -13,6 +16,14 @@ type SmtpConfigurationSettingValue = {
   host?: string;
   port?: number;
   from?: string;
+};
+
+type ApplicationBrandingSettingValue = {
+  applicationTitle?: string;
+};
+
+type NavigationSearchSettingValue = {
+  enabled?: boolean;
 };
 
 function readEnabledFlag(value: unknown) {
@@ -36,6 +47,55 @@ function readSmtpOverrides(value: unknown) {
     host: typed.host?.trim() ?? "",
     port: typeof typed.port === "number" && Number.isFinite(typed.port) ? typed.port : null,
     from: typed.from?.trim() ?? ""
+  };
+}
+
+function readApplicationBranding(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return {
+      applicationTitle: DEFAULT_APPLICATION_TITLE
+    };
+  }
+
+  const typed = value as ApplicationBrandingSettingValue;
+  return {
+    applicationTitle: typed.applicationTitle?.trim() || DEFAULT_APPLICATION_TITLE
+  };
+}
+
+function readNavigationSearch(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return {
+      enabled: true
+    };
+  }
+
+  const typed = value as NavigationSearchSettingValue;
+  return {
+    enabled: typed.enabled !== false
+  };
+}
+
+export async function getApplicationBrandingSettings() {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: APPLICATION_BRANDING_KEY }
+  });
+  const branding = readApplicationBranding(setting?.value);
+
+  return {
+    applicationTitle: branding.applicationTitle,
+    source: branding.applicationTitle === DEFAULT_APPLICATION_TITLE ? "default" : "admin"
+  } as const;
+}
+
+export async function getNavigationSearchSettings() {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: NAVIGATION_SEARCH_KEY }
+  });
+  const navigationSearch = readNavigationSearch(setting?.value);
+
+  return {
+    enabled: navigationSearch.enabled
   };
 }
 
@@ -139,4 +199,43 @@ export async function updateSmtpConfiguration({
   });
 
   return getReportEmailDeliverySettings();
+}
+
+export async function updateApplicationBrandingSettings(applicationTitle: string) {
+  const normalizedTitle = applicationTitle.trim() || DEFAULT_APPLICATION_TITLE;
+  const value = {
+    applicationTitle: normalizedTitle
+  } satisfies ApplicationBrandingSettingValue;
+
+  await prisma.platformSetting.upsert({
+    where: { key: APPLICATION_BRANDING_KEY },
+    create: {
+      key: APPLICATION_BRANDING_KEY,
+      value: value as Prisma.InputJsonValue
+    },
+    update: {
+      value: value as Prisma.InputJsonValue
+    }
+  });
+
+  return getApplicationBrandingSettings();
+}
+
+export async function updateNavigationSearchSettings(enabled: boolean) {
+  const value = {
+    enabled
+  } satisfies NavigationSearchSettingValue;
+
+  await prisma.platformSetting.upsert({
+    where: { key: NAVIGATION_SEARCH_KEY },
+    create: {
+      key: NAVIGATION_SEARCH_KEY,
+      value: value as Prisma.InputJsonValue
+    },
+    update: {
+      value: value as Prisma.InputJsonValue
+    }
+  });
+
+  return getNavigationSearchSettings();
 }

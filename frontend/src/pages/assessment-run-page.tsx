@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Copy, ExternalLink, MonitorPlay, Sparkles, TimerReset } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, ExternalLink, MonitorPlay, Sparkles, TimerReset } from "lucide-react";
 import { toast } from "sonner";
 import { AssessmentMatrix } from "@/components/assessment-matrix";
 import { AssessmentPresentationMode } from "@/components/assessment-presentation-mode";
@@ -33,6 +33,20 @@ function formatDate(value: string | null | undefined) {
     month: "short",
     day: "numeric",
     year: "numeric"
+  }).format(new Date(value));
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
   }).format(new Date(value));
 }
 
@@ -127,6 +141,7 @@ export function AssessmentRunPage() {
   const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [hasHydrated, setHasHydrated] = useState(false);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editOwnerUserId, setEditOwnerUserId] = useState("");
   const [editDueDate, setEditDueDate] = useState("");
@@ -138,6 +153,7 @@ export function AssessmentRunPage() {
   const [isGuestParticipationOpen, setIsGuestParticipationOpen] = useState(false);
   const [isPresentationModeOpen, setIsPresentationModeOpen] = useState(false);
   const [presentationQuestionIndex, setPresentationQuestionIndex] = useState(0);
+  const [isSubmitConfirmOpen, setIsSubmitConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!runQuery.data || hasHydrated) {
@@ -165,6 +181,7 @@ export function AssessmentRunPage() {
     setEditDueDate(runQuery.data.dueDate ? new Date(runQuery.data.dueDate).toISOString().slice(0, 10) : "");
     setEditPeriodLabel(runQuery.data.periodLabel);
     setLastSavedSnapshot(JSON.stringify(nextResponses));
+    setLastSavedAt(runQuery.data.updatedAt ?? null);
     setHasHydrated(true);
   }, [hasHydrated, runQuery.data]);
 
@@ -178,6 +195,7 @@ export function AssessmentRunPage() {
       }),
     onSuccess: (_data, payload) => {
       setLastSavedSnapshot(JSON.stringify(payload));
+      setLastSavedAt(new Date().toISOString());
       setAutosaveStatus("saved");
       queryClient.invalidateQueries({ queryKey: ["assessment-run", runId] });
       queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
@@ -196,6 +214,7 @@ export function AssessmentRunPage() {
       });
     },
     onSuccess: () => {
+      setIsSubmitConfirmOpen(false);
       toast.success("Assessment submitted");
       queryClient.invalidateQueries({ queryKey: ["assessment-run", runId] });
       queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
@@ -289,6 +308,7 @@ export function AssessmentRunPage() {
   );
   const totalQuestions = run?.domains.reduce((sum, domain) => sum + domain.totalQuestions, 0) ?? 0;
   const answeredQuestions = Object.keys(responses).length;
+  const unansweredQuestions = Math.max(totalQuestions - answeredQuestions, 0);
   const firstUnansweredQuestionId = useMemo(
     () =>
       run?.domains
@@ -344,6 +364,14 @@ export function AssessmentRunPage() {
         : autosaveStatus === "error"
           ? "Autosave failed"
           : "Draft changes are local until you answer";
+  const autosaveToneClass =
+    autosaveStatus === "saving"
+      ? "border-primary/20 bg-primary/5 text-primary"
+      : autosaveStatus === "saved"
+        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+        : autosaveStatus === "error"
+          ? "border-rose-200 bg-rose-50 text-rose-700"
+          : "border-border/80 bg-white text-muted-foreground";
 
   function renderGuestLinkList(links: GuestAssessmentLink[], emptyMessage: string) {
     if (!links.length) {
@@ -723,7 +751,12 @@ export function AssessmentRunPage() {
                   <div className="text-2xl font-semibold text-foreground">
                     {answeredQuestions}/{totalQuestions} questions answered
                   </div>
-                  <div className="text-sm text-muted-foreground">{autosaveMessage}</div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={unansweredQuestions ? "secondary" : "success"}>
+                      {unansweredQuestions ? `${unansweredQuestions} unanswered` : "All questions answered"}
+                    </Badge>
+                    {firstUnansweredQuestionId ? <Badge variant="outline">Next gap ready to resume</Badge> : null}
+                  </div>
                 </div>
                 <div className="rounded-[1.25rem] bg-white px-4 py-3 text-right shadow-sm">
                   <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Completion</div>
@@ -737,6 +770,19 @@ export function AssessmentRunPage() {
                   className="h-3 rounded-full bg-primary transition-all"
                   style={{ width: `${totalQuestions ? (answeredQuestions / totalQuestions) * 100 : 0}%` }}
                 />
+              </div>
+              <div className={`mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border px-4 py-3 text-sm ${autosaveToneClass}`}>
+                <div className="flex items-center gap-2">
+                  {autosaveStatus === "error" ? (
+                    <AlertTriangle className="h-4 w-4" />
+                  ) : autosaveStatus === "saved" ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : null}
+                  <span className="font-medium">{autosaveMessage}</span>
+                </div>
+                <div className="text-xs">
+                  Last saved: {lastSavedAt ? formatDateTime(lastSavedAt) : "Not yet"}
+                </div>
               </div>
             </div>
 
@@ -796,11 +842,22 @@ export function AssessmentRunPage() {
               </Button>
             ) : null}
             {!isSubmitted && canEditResponses ? (
+              <div className="inline-flex items-center rounded-full bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                {unansweredQuestions
+                  ? `${unansweredQuestions} questions still need answers before submission`
+                  : "Everything is answered and ready for final submission"}
+              </div>
+            ) : null}
+            {!isSubmitted && canEditResponses ? (
               <>
                 <Button onClick={() => saveMutation.mutate(responses)} type="button" variant="secondary">
                   Save draft now
                 </Button>
-                <Button disabled={!canManageRun || !run || answeredQuestions < totalQuestions || submitMutation.isPending} onClick={() => submitMutation.mutate()} type="button">
+                <Button
+                  disabled={!canManageRun || !run || answeredQuestions < totalQuestions || submitMutation.isPending}
+                  onClick={() => setIsSubmitConfirmOpen(true)}
+                  type="button"
+                >
                   Submit assessment
                 </Button>
               </>
@@ -903,6 +960,55 @@ export function AssessmentRunPage() {
           responses={responses}
           run={run}
         />
+      ) : null}
+
+      {run && isSubmitConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[1.5rem] border border-primary/20 bg-white p-6 shadow-2xl">
+            <div className="space-y-2">
+              <div className="text-lg font-semibold text-foreground">Submit assessment</div>
+              <div className="text-sm text-muted-foreground">
+                This will finalize the run and move it into submitted results. The assessment content will become read-only.
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="rounded-[1rem] border bg-muted/20 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Answered</div>
+                <div className="mt-1 text-xl font-semibold text-foreground">{answeredQuestions}</div>
+              </div>
+              <div className="rounded-[1rem] border bg-muted/20 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Total</div>
+                <div className="mt-1 text-xl font-semibold text-foreground">{totalQuestions}</div>
+              </div>
+              <div className="rounded-[1rem] border bg-muted/20 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Summary note</div>
+                <div className="mt-1 text-sm font-medium text-foreground">
+                  {submissionSummary.trim() ? "Included" : "Not provided"}
+                </div>
+              </div>
+            </div>
+
+            <div className={`mt-4 rounded-[1rem] border px-4 py-3 text-sm ${unansweredQuestions ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+              {unansweredQuestions
+                ? `${unansweredQuestions} questions are still unanswered. Complete them before submitting.`
+                : "All questions are answered. This run is ready to submit."}
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <Button onClick={() => setIsSubmitConfirmOpen(false)} type="button" variant="outline">
+                Cancel
+              </Button>
+              <Button
+                disabled={submitMutation.isPending || unansweredQuestions > 0}
+                onClick={() => submitMutation.mutate()}
+                type="button"
+              >
+                {submitMutation.isPending ? "Submitting..." : "Confirm submit"}
+              </Button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       <Button className="w-fit px-0 text-sm font-medium text-primary" onClick={() => navigate(returnTo)} type="button" variant="ghost">

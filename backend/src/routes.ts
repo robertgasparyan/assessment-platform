@@ -30,8 +30,12 @@ import {
   type PostgresDumpFormat
 } from "./lib/admin-export.js";
 import {
+  getApplicationBrandingSettings,
+  getNavigationSearchSettings,
   getReportEmailDeliverySettings,
   updateSmtpConfiguration,
+  updateApplicationBrandingSettings,
+  updateNavigationSearchSettings,
   updateReportEmailDeliverySettings
 } from "./lib/platform-settings.js";
 import {
@@ -253,6 +257,14 @@ const smtpConfigurationSchema = z.object({
   host: z.string().trim().min(1),
   port: z.number().int().min(1).max(65535),
   from: z.string().trim().min(1)
+});
+
+const applicationBrandingSchema = z.object({
+  applicationTitle: z.string().trim().max(80)
+});
+
+const navigationSearchSchema = z.object({
+  enabled: z.boolean()
 });
 
 const aiProviderSchema = z.enum(["ollama", "openai", "claude", "gemini"]);
@@ -1819,6 +1831,14 @@ router.get("/settings/report-email-delivery", async (request, response) => {
   response.json(serializeReportEmailDeliverySettings(settings, request.adminUser?.role === UserRole.ADMIN));
 });
 
+router.get("/settings/application-branding", async (_request, response) => {
+  response.json(await getApplicationBrandingSettings());
+});
+
+router.get("/settings/navigation-search", async (_request, response) => {
+  response.json(await getNavigationSearchSettings());
+});
+
 router.get("/settings/ai-status", async (_request, response) => {
   response.json(await getAiStatusForUser());
 });
@@ -1867,6 +1887,42 @@ router.put("/settings/smtp-configuration", requireRole(UserRole.ADMIN), async (r
   });
 
   response.json(serializeReportEmailDeliverySettings(settings, true));
+});
+
+router.put("/settings/application-branding", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = applicationBrandingSchema.parse(request.body ?? {});
+  const settings = await updateApplicationBrandingSettings(input.applicationTitle);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "application_branding",
+    action: "platform_setting.application_branding_updated",
+    summary: `${request.adminUser!.displayName} updated the application title`,
+    metadata: {
+      applicationTitle: settings.applicationTitle
+    }
+  });
+
+  response.json(settings);
+});
+
+router.put("/settings/navigation-search", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = navigationSearchSchema.parse(request.body ?? {});
+  const settings = await updateNavigationSearchSettings(input.enabled);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "navigation_search",
+    action: "platform_setting.navigation_search_updated",
+    summary: `${request.adminUser!.displayName} ${settings.enabled ? "enabled" : "disabled"} spotlight search`,
+    metadata: {
+      enabled: settings.enabled
+    }
+  });
+
+  response.json(settings);
 });
 
 router.put("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (request, response) => {

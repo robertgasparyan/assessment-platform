@@ -7,9 +7,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/features/auth-context";
+import { useApplicationBranding } from "@/hooks/use-application-branding";
 
 export function ActivateAccountPage() {
   const { activateAccount } = useAuth();
+  const { applicationTitle } = useApplicationBranding();
   const [searchParams] = useSearchParams();
   const token = useMemo(() => searchParams.get("token") ?? "", [searchParams]);
   const [newPassword, setNewPassword] = useState("");
@@ -48,7 +50,7 @@ export function ActivateAccountPage() {
             <Radar className="h-6 w-6" />
           </div>
           <div>
-            <div className="text-sm font-medium text-muted-foreground">Assessment Platform</div>
+            <div className="text-sm font-medium text-muted-foreground">{applicationTitle}</div>
             <h1 className="text-2xl font-semibold text-foreground">Activate account</h1>
           </div>
         </div>

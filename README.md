@@ -20,8 +20,8 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 
 ## Stack
 
-- Frontend: React, TypeScript, Vite, Tailwind CSS, shadcn/ui-style components
-- Backend: Node.js, Express, TypeScript
+- Frontend: React, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS, Recharts, `sonner`, `lucide-react`, and shadcn/ui-style components
+- Backend: Node.js, Express, TypeScript, and Zod request validation
 - Database: PostgreSQL with Prisma ORM
 
 ## Main Product Areas
@@ -45,7 +45,7 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 - Password change and logout are available from the profile menu in the top-right of the app shell.
 - User management, email configuration, and audit review are available from the `Administration` section for administrators.
 - `Administration > Data Model` also includes relationship maps plus JSON and PostgreSQL backup/export tools.
-- `Administration > Configurations` also includes global AI settings for `Ollama`, `OpenAI`, `Claude`, and `Gemini`.
+- `Administration > Configurations` also includes application branding, spotlight-search controls, and global AI settings for `Ollama`, `OpenAI`, `Claude`, and `Gemini`.
 - Supported roles:
   - `ADMIN`
   - `TEMPLATE_MANAGER`
@@ -71,7 +71,10 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 - Dashboard `My work` section for assigned runs and team-visible active work
 - Dedicated `My Assessments` page for assigned active runs, team queue, and submitted access
 - Autosave and manual save while taking assessments
+- Stronger assessment progress visibility with unanswered-state cues and submit confirmation
 - Submission summary notes
+- Presentation mode with facilitator agenda, next-unanswered shortcuts, and domain progress cues
+- Spotlight search / command palette for quick page navigation, with admin enable/disable
 - Results page with:
   - `Overview`, `Compare`, and `Peers`
   - executive summary
@@ -86,9 +89,12 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
   - `Latest per team`
   - `Latest per team + assessment`
   - summary cards
+  - leading-rows and needs-attention highlights
+  - active filter chips for the current reporting lens
   - score-by-team chart
   - domain snapshot
   - question snapshot when filtered
+  - current-state table sorting and inline row expansion for domain drilldown
   - optional AI Brief for the current filtered reporting lens with cache/regenerate and submitted-data guardrails
 - Report sharing:
   - dedicated report-sharing workspace on submitted results

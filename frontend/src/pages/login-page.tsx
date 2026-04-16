@@ -6,9 +6,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/features/auth-context";
+import { useApplicationBranding } from "@/hooks/use-application-branding";
 
 export function LoginPage() {
   const { login } = useAuth();
+  const { applicationTitle } = useApplicationBranding();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,7 +37,7 @@ export function LoginPage() {
             <Radar className="h-6 w-6" />
           </div>
           <div>
-            <div className="text-sm font-medium text-muted-foreground">Assessment Platform v1.0</div>
+            <div className="text-sm font-medium text-muted-foreground">{applicationTitle} v1.0</div>
             <h1 className="text-2xl font-semibold text-foreground">Sign in</h1>
           </div>
         </div>

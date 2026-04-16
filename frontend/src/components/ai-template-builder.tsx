@@ -396,6 +396,9 @@ export function AiTemplateBuilder({
 
           <div className="space-y-3">
             <div className="text-sm font-medium text-foreground">Maturity labels</div>
+            <div className="rounded-[1rem] border border-border/70 bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+              AI Builder starts with a standard 5-level maturity scale. After generation, you can still edit the labels and descriptions in the authoring studio.
+            </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
               {scoringLabels.map((label, index) => (
                 <div className="rounded-[1.1rem] border bg-white p-3" key={`builder-score-${index}`}>

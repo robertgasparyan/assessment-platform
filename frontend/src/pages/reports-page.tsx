@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { ArrowRight, BarChart3, Bot, Layers3, Search, Sparkles, Target } from "lucide-react";
+import { ArrowRight, BarChart3, Bot, ChevronDown, ChevronUp, Layers3, Search, Sparkles, Target } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,6 +44,22 @@ function scoreTone(score: number | null | undefined) {
   return "bg-border text-foreground";
 }
 
+function badgeTone(score: number | null | undefined) {
+  if (typeof score !== "number") {
+    return "secondary" as const;
+  }
+
+  if (score >= 4) {
+    return "success" as const;
+  }
+
+  if (score >= 2.5) {
+    return "outline" as const;
+  }
+
+  return "secondary" as const;
+}
+
 export function ReportsPage() {
   const [viewMode, setViewMode] = useState<"team" | "team-template">("team-template");
   const [search, setSearch] = useState("");
@@ -52,6 +68,10 @@ export function ReportsPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [domainFilter, setDomainFilter] = useState("all");
   const [questionFilter, setQuestionFilter] = useState("all");
+  const [tableSort, setTableSort] = useState<
+    "submittedAt-desc" | "submittedAt-asc" | "score-desc" | "score-asc" | "team-asc" | "template-asc" | "period-desc" | "period-asc"
+  >("submittedAt-desc");
+  const [expandedRunIds, setExpandedRunIds] = useState<string[]>([]);
   const [isAiBriefOpen, setIsAiBriefOpen] = useState(false);
 
   const reportsQuery = useQuery({
@@ -251,6 +271,58 @@ export function ReportsPage() {
   const selectedDomainLabel = domainFilter !== "all" ? domainFilter : null;
   const selectionText = viewMode === "team-template" ? data?.selectionRule.latestByTeamTemplate : data?.selectionRule.latestByTeam;
   const aiEnabledForReports = Boolean(aiStatusQuery.data?.enabled);
+  const activeFilterChips = [
+    search ? { key: "search", label: `Search: ${search}` } : null,
+    teamFilter !== "all" ? { key: "team", label: `Team: ${teamFilter}` } : null,
+    templateFilter !== "all" ? { key: "template", label: `Template: ${templateFilter}` } : null,
+    categoryFilter !== "all" ? { key: "category", label: `Category: ${categoryFilter}` } : null,
+    domainFilter !== "all" ? { key: "domain", label: `Domain: ${domainFilter}` } : null,
+    questionFilter !== "all" ? { key: "question", label: `Question: ${questionFilter}` } : null
+  ].filter((item): item is { key: string; label: string } => Boolean(item));
+  const topRows = useMemo(
+    () =>
+      [...filteredLatestRows]
+        .filter((item) => typeof item.overallScore === "number")
+        .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
+        .slice(0, 3),
+    [filteredLatestRows]
+  );
+  const watchRows = useMemo(
+    () =>
+      [...filteredLatestRows]
+        .filter((item) => typeof item.overallScore === "number")
+        .sort((a, b) => (a.overallScore ?? 0) - (b.overallScore ?? 0))
+        .slice(0, 3),
+    [filteredLatestRows]
+  );
+  const sortedLatestRows = useMemo(() => {
+    const rows = [...filteredLatestRows];
+
+    rows.sort((left, right) => {
+      switch (tableSort) {
+        case "submittedAt-asc":
+          return (left.submittedAt ? new Date(left.submittedAt).getTime() : 0) - (right.submittedAt ? new Date(right.submittedAt).getTime() : 0);
+        case "submittedAt-desc":
+          return (right.submittedAt ? new Date(right.submittedAt).getTime() : 0) - (left.submittedAt ? new Date(left.submittedAt).getTime() : 0);
+        case "score-asc":
+          return (left.overallScore ?? Number.POSITIVE_INFINITY) - (right.overallScore ?? Number.POSITIVE_INFINITY);
+        case "score-desc":
+          return (right.overallScore ?? Number.NEGATIVE_INFINITY) - (left.overallScore ?? Number.NEGATIVE_INFINITY);
+        case "team-asc":
+          return left.teamName.localeCompare(right.teamName);
+        case "template-asc":
+          return left.templateName.localeCompare(right.templateName);
+        case "period-asc":
+          return left.periodLabel.localeCompare(right.periodLabel);
+        case "period-desc":
+          return right.periodLabel.localeCompare(left.periodLabel);
+        default:
+          return 0;
+      }
+    });
+
+    return rows;
+  }, [filteredLatestRows, tableSort]);
 
   const aiBriefMutation = useMutation({
     mutationFn: (refresh?: boolean) =>
@@ -365,6 +437,10 @@ export function ReportsPage() {
         selectedValue: item.selectedValue ?? ""
       }))
     );
+  }
+
+  function toggleExpandedRow(runId: string) {
+    setExpandedRunIds((current) => (current.includes(runId) ? current.filter((id) => id !== runId) : [...current, runId]));
   }
 
   return (
@@ -483,6 +559,16 @@ export function ReportsPage() {
               <TabsTrigger value="team-template">Latest per team + assessment</TabsTrigger>
             </TabsList>
           </Tabs>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className={`rounded-[1rem] border px-4 py-3 text-sm ${viewMode === "team" ? "border-primary/20 bg-primary/5" : "bg-white"}`}>
+              <div className="font-semibold text-foreground">Team lens</div>
+              <div className="mt-1 text-muted-foreground">Use one latest submitted row per team for the broadest current-state picture.</div>
+            </div>
+            <div className={`rounded-[1rem] border px-4 py-3 text-sm ${viewMode === "team-template" ? "border-primary/20 bg-primary/5" : "bg-white"}`}>
+              <div className="font-semibold text-foreground">Team + assessment lens</div>
+              <div className="mt-1 text-muted-foreground">Use one latest submitted row per team and template when you need assessment-specific current state.</div>
+            </div>
+          </div>
           <div className="rounded-[1.1rem] border bg-muted/60 px-4 py-3 text-sm text-muted-foreground">{selectionText}</div>
         </CardContent>
       </Card>
@@ -623,6 +709,17 @@ export function ReportsPage() {
               </button>
             </div>
           </div>
+          <div className="flex flex-wrap gap-2">
+            {activeFilterChips.length ? (
+              activeFilterChips.map((chip) => (
+                <Badge key={chip.key} variant="outline">
+                  {chip.label}
+                </Badge>
+              ))
+            ) : (
+              <Badge variant="secondary">No extra filters applied</Badge>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -697,6 +794,72 @@ export function ReportsPage() {
         </Card>
       </div>
 
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card className="border-border bg-white/90">
+          <CardHeader>
+            <CardTitle>Leading rows in view</CardTitle>
+            <CardDescription>Fast scan of the strongest current submitted positions after the active filters are applied.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {topRows.length ? (
+              topRows.map((item) => (
+                <div className="flex items-start justify-between gap-3 rounded-[1.1rem] border bg-white px-4 py-3" key={`top-row-${item.assessmentRunId}`}>
+                  <div>
+                    <div className="font-medium text-foreground">
+                      {item.teamName}
+                      {viewMode === "team-template" ? <span className="text-muted-foreground"> · {item.templateName}</span> : null}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      {item.periodLabel}
+                      {item.strongestDomain?.title ? ` · Strongest: ${item.strongestDomain.title}` : ""}
+                    </div>
+                  </div>
+                  <Badge variant={badgeTone(item.overallScore)}>
+                    {item.overallScore != null ? item.overallScore.toFixed(2) : "-"}
+                  </Badge>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-[1.1rem] border border-dashed bg-white px-4 py-8 text-sm text-muted-foreground">
+                No scored rows match the current filters.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-border bg-white/90">
+          <CardHeader>
+            <CardTitle>Needs attention</CardTitle>
+            <CardDescription>Quick view of the lowest-scoring current rows so review can start with the biggest current gaps.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {watchRows.length ? (
+              watchRows.map((item) => (
+                <div className="flex items-start justify-between gap-3 rounded-[1.1rem] border bg-white px-4 py-3" key={`watch-row-${item.assessmentRunId}`}>
+                  <div>
+                    <div className="font-medium text-foreground">
+                      {item.teamName}
+                      {viewMode === "team-template" ? <span className="text-muted-foreground"> · {item.templateName}</span> : null}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      {item.periodLabel}
+                      {item.weakestDomain?.title ? ` · Weakest: ${item.weakestDomain.title}` : ""}
+                    </div>
+                  </div>
+                  <Badge variant={badgeTone(item.overallScore)}>
+                    {item.overallScore != null ? item.overallScore.toFixed(2) : "-"}
+                  </Badge>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-[1.1rem] border border-dashed bg-white px-4 py-8 text-sm text-muted-foreground">
+                No scored rows match the current filters.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       <Card className="overflow-hidden border-border">
         <CardHeader className="border-b bg-secondary/60">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -714,9 +877,31 @@ export function ReportsPage() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 bg-white px-5 py-4">
+            <div className="text-sm text-muted-foreground">
+              Sort the current-state table by the field you want to review first.
+            </div>
+            <div className="w-full max-w-xs">
+              <Select
+                options={[
+                  { value: "submittedAt-desc", label: "Newest submitted first" },
+                  { value: "submittedAt-asc", label: "Oldest submitted first" },
+                  { value: "score-desc", label: "Highest score first" },
+                  { value: "score-asc", label: "Lowest score first" },
+                  { value: "team-asc", label: "Team A-Z" },
+                  { value: "template-asc", label: "Template A-Z" },
+                  { value: "period-desc", label: "Period Z-A" },
+                  { value: "period-asc", label: "Period A-Z" }
+                ]}
+                value={tableSort}
+                onChange={(event) => setTableSort(event.target.value as typeof tableSort)}
+              />
+            </div>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[64px]">Detail</TableHead>
                 <TableHead>Team</TableHead>
                 <TableHead>Assessment</TableHead>
                 <TableHead>Template</TableHead>
@@ -729,38 +914,127 @@ export function ReportsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredLatestRows.map((item: LatestByTeamReport) => (
-                <TableRow key={`report-latest-row-${item.assessmentRunId}`}>
-                  <TableCell className="font-medium">{item.teamName}</TableCell>
-                  <TableCell>
-                    <div className="font-medium">{item.title}</div>
-                    <div className="text-xs text-muted-foreground">{item.templateCategory ?? "Uncategorized template"}</div>
-                  </TableCell>
-                  <TableCell>{item.templateName}</TableCell>
-                  <TableCell>{item.periodLabel}</TableCell>
-                  <TableCell>{formatDate(item.submittedAt)}</TableCell>
-                  <TableCell>
-                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ${scoreTone(item.overallScore)}`}>
-                      {item.overallScore != null ? item.overallScore.toFixed(2) : "-"}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    {item.strongestDomain ? `${item.strongestDomain.title} (${(item.strongestDomain.score ?? 0).toFixed(2)})` : "-"}
-                  </TableCell>
-                  <TableCell>
-                    {item.weakestDomain ? `${item.weakestDomain.title} (${(item.weakestDomain.score ?? 0).toFixed(2)})` : "-"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Link className="inline-flex items-center gap-2 text-sm font-medium text-primary" to={`/assessments/${item.assessmentRunId}/results`}>
-                      View results
-                      <ArrowRight className="h-4 w-4" />
-                    </Link>
-                  </TableCell>
-                </TableRow>
+              {sortedLatestRows.map((item: LatestByTeamReport) => (
+                <>
+                  <TableRow key={`report-latest-row-${item.assessmentRunId}`}>
+                    <TableCell>
+                      <Button
+                        className="h-8 w-8 p-0"
+                        onClick={() => toggleExpandedRow(item.assessmentRunId)}
+                        type="button"
+                        variant="outline"
+                      >
+                        {expandedRunIds.includes(item.assessmentRunId) ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      </Button>
+                    </TableCell>
+                    <TableCell className="font-medium">{item.teamName}</TableCell>
+                    <TableCell>
+                      <div className="font-medium">{item.title}</div>
+                      <div className="text-xs text-muted-foreground">{item.templateCategory ?? "Uncategorized template"}</div>
+                    </TableCell>
+                    <TableCell>{item.templateName}</TableCell>
+                    <TableCell>{item.periodLabel}</TableCell>
+                    <TableCell>{formatDate(item.submittedAt)}</TableCell>
+                    <TableCell>
+                      <span className={`rounded-full px-3 py-1 text-sm font-semibold ${scoreTone(item.overallScore)}`}>
+                        {item.overallScore != null ? item.overallScore.toFixed(2) : "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {item.strongestDomain ? `${item.strongestDomain.title} (${(item.strongestDomain.score ?? 0).toFixed(2)})` : "-"}
+                    </TableCell>
+                    <TableCell>
+                      {item.weakestDomain ? `${item.weakestDomain.title} (${(item.weakestDomain.score ?? 0).toFixed(2)})` : "-"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Link className="inline-flex items-center gap-2 text-sm font-medium text-primary" to={`/assessments/${item.assessmentRunId}/results`}>
+                        View results
+                        <ArrowRight className="h-4 w-4" />
+                      </Link>
+                    </TableCell>
+                  </TableRow>
+                  {expandedRunIds.includes(item.assessmentRunId) ? (
+                    <TableRow key={`report-latest-row-expanded-${item.assessmentRunId}`}>
+                      <TableCell className="bg-muted/20" colSpan={10}>
+                        <div className="grid gap-4 p-4 xl:grid-cols-[1.1fr,0.9fr]">
+                          <div className="space-y-3">
+                            <div className="text-sm font-semibold text-foreground">Domain drilldown</div>
+                            {item.domains.length ? (
+                              item.domains.map((domain) => (
+                                <div className="rounded-[1rem] border bg-white px-4 py-3" key={`${item.assessmentRunId}-${domain.title}`}>
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="font-medium text-foreground">{domain.title}</div>
+                                    <Badge variant={badgeTone(domain.averageScore)}>
+                                      {domain.averageScore != null ? domain.averageScore.toFixed(2) : "No score"}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-3 space-y-2">
+                                    {domain.questions.slice(0, 4).map((question) => (
+                                      <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl bg-muted/30 px-3 py-2 text-sm" key={`${item.assessmentRunId}-${domain.title}-${question.prompt}`}>
+                                        <div className="min-w-0 flex-1 text-muted-foreground">{question.prompt}</div>
+                                        <div className={`rounded-full px-2.5 py-1 text-xs font-semibold ${scoreTone(question.selectedValue)}`}>
+                                          {question.selectedLabel ? `${question.selectedLabel}${question.selectedValue ? ` (${question.selectedValue})` : ""}` : "No answer"}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  {domain.questions.length > 4 ? (
+                                    <div className="mt-2 text-xs text-muted-foreground">
+                                      +{domain.questions.length - 4} more questions in this domain
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="rounded-[1rem] border border-dashed bg-white px-4 py-6 text-sm text-muted-foreground">
+                                No domain details available for this row.
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-3">
+                            <div className="text-sm font-semibold text-foreground">Current row summary</div>
+                            <div className="rounded-[1rem] border bg-white px-4 py-4">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Submitted</div>
+                                  <div className="mt-1 text-sm text-foreground">{formatDate(item.submittedAt)}</div>
+                                </div>
+                                <div>
+                                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Overall score</div>
+                                  <div className="mt-1 text-sm text-foreground">
+                                    {item.overallScore != null ? item.overallScore.toFixed(2) : "-"}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Strongest</div>
+                                  <div className="mt-1 text-sm text-foreground">
+                                    {item.strongestDomain ? `${item.strongestDomain.title} (${(item.strongestDomain.score ?? 0).toFixed(2)})` : "-"}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Weakest</div>
+                                  <div className="mt-1 text-sm text-foreground">
+                                    {item.weakestDomain ? `${item.weakestDomain.title} (${(item.weakestDomain.score ?? 0).toFixed(2)})` : "-"}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="mt-4">
+                                <Link className="inline-flex items-center gap-2 text-sm font-medium text-primary" to={`/assessments/${item.assessmentRunId}/results`}>
+                                  Open full results
+                                  <ArrowRight className="h-4 w-4" />
+                                </Link>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </>
               ))}
-              {!filteredLatestRows.length ? (
+              {!sortedLatestRows.length ? (
                 <TableRow>
-                  <TableCell className="text-muted-foreground" colSpan={9}>
+                  <TableCell className="text-muted-foreground" colSpan={10}>
                     No current-state reports match the current filters.
                   </TableCell>
                 </TableRow>

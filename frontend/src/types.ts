@@ -131,6 +131,15 @@ export type ReportEmailDeliverySettings = {
   };
 };
 
+export type ApplicationBrandingSettings = {
+  applicationTitle: string;
+  source: "default" | "admin";
+};
+
+export type NavigationSearchSettings = {
+  enabled: boolean;
+};
+
 export type AiProvider = "ollama" | "openai" | "claude" | "gemini";
 
 export type AiProviderSettingsSummary = {

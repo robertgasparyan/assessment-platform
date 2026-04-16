@@ -60,6 +60,8 @@ Use `Administration` to:
 - require password change on next login when needed
 - generate activation links for invitation-based onboarding
 - configure submitted-report email delivery and SMTP settings
+- update the application title shown across the shell and login screens
+- enable or disable spotlight search / command palette
 - review the data model relationship maps
 - download portable or full JSON exports
 - download PostgreSQL dumps when server-side `pg_dump` is available
@@ -85,6 +87,10 @@ Use the Dashboard to:
 - review `My work` for assigned runs and team-visible queue
 - see latest submitted team state
 - review lightweight operational summaries
+
+Quick navigation:
+- when spotlight search is enabled by an administrator, press `Ctrl+K` or `Cmd+K`
+- use it to jump quickly to core pages like `Create assessment`, `Submitted assessments`, `Templates`, `Reports`, or `Users`
 
 ## Libraries
 
@@ -118,6 +124,10 @@ Use Templates to create and manage assessment templates.
    - compose
    - review
 4. Save the draft or publish the template
+
+AI-assisted authoring:
+- use `AI Builder` for guided scaffold/domain/question generation
+- inside the authoring studio, use AI to improve or generate a question directly from the compose flow
 
 AI features inside `Author`:
 - improve a question prompt, guidance, and level descriptions

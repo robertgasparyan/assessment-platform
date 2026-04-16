@@ -1,9 +1,11 @@
 import { useMemo } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { ShieldCheck, Users, Settings2, ScrollText, Database } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/features/auth-context";
+import { ApplicationBrandingSection } from "@/components/application-branding-section";
+import { NavigationSearchSection } from "@/components/navigation-search-section";
 import { UsersManagementSection } from "@/components/users-management-section";
 import { AiConfigurationSection } from "@/components/ai-configuration-section";
 import { EmailConfigurationSection } from "@/components/email-configuration-section";
@@ -38,14 +40,7 @@ export function AdministrationPage() {
   );
 
   if (user?.role !== "ADMIN") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Administration</CardTitle>
-          <CardDescription>This area is only available to administrators.</CardDescription>
-        </CardHeader>
-      </Card>
-    );
+    return <Navigate replace to="/" />;
   }
 
   return (
@@ -96,6 +91,8 @@ export function AdministrationPage() {
         </TabsContent>
 
         <TabsContent className="space-y-6" value="configurations">
+          <ApplicationBrandingSection />
+          <NavigationSearchSection />
           <AiConfigurationSection />
           <EmailConfigurationSection />
         </TabsContent>

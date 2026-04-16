@@ -5,10 +5,13 @@ import { LayoutDashboard, ClipboardList, FileStack, Radar, LibraryBig, Users, Li
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/features/auth-context";
 import { Button } from "@/components/ui/button";
+import { CommandPalette } from "@/components/command-palette";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { useApplicationBranding } from "@/hooks/use-application-branding";
+import { useNavigationSearchSettings } from "@/hooks/use-navigation-search-settings";
 import type { AiStatus, NotificationsResponse, UserRole } from "@/types";
 
 const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; roles: UserRole[] }> = [
@@ -24,6 +27,8 @@ const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout, changePassword } = useAuth();
+  const { applicationTitle } = useApplicationBranding();
+  const navigationSearchQuery = useNavigationSearchSettings();
   const queryClient = useQueryClient();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -97,7 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div>
               <div className="text-sm font-semibold text-muted-foreground">Admin workspace</div>
-              <div className="text-xl font-semibold">Assessment Platform</div>
+              <div className="text-xl font-semibold">{applicationTitle}</div>
             </div>
           </Link>
           <nav className="space-y-2">
@@ -128,6 +133,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="min-w-0 flex-1">
           <div className="mb-4 flex justify-end">
             <div className="flex items-center gap-3">
+              <CommandPalette enabled={navigationSearchQuery.data?.enabled ?? true} />
               <div className="relative">
                 <button
                   className="relative flex items-center gap-3 rounded-[1.25rem] border border-border/80 bg-white/92 px-3 py-2 text-left shadow-sm transition hover:border-primary/35 hover:bg-white"

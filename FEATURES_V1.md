@@ -32,6 +32,8 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - `Audit Trail` section
 - `Data Model` section with compact and visual relationship maps
 - Global AI configuration section with provider management and connection testing
+- Application title configuration
+- Spotlight / command-palette enable-disable setting
 - Create users
 - Edit users
 - Activate and deactivate users
@@ -66,6 +68,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
   - create assessment
   - active assessments
   - submitted assessments
+- Spotlight search / command palette entry with keyboard shortcut support
 - Compact `Latest submitted by team` section
 - Lightweight search inside latest submitted team state
 - Trend and recent activity context without becoming a full reporting console
@@ -84,6 +87,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - Reusable domain/question composition
 - Drag-and-drop domain and question ordering
 - AI question improvement assist
+- AI question generation from the authoring flow
 - AI domain refinement assist
 - AI draft consistency review
 - Separate `AI Builder` tab for guided AI-assisted template creation
@@ -144,10 +148,18 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - Manual save draft
 - Jump to first unanswered question
 - Domain completion visibility
+- Stronger progress status with unanswered-count visibility
+- Autosave status panel with last-saved feedback
+- Internal submit confirmation step
 - Submission summary note
 - Submitted runs become read-only
 - Role-aware access restrictions for templates, libraries, teams, users, and assessment operations
 - Dashboard `My work` section for assigned runs and team-visible queue
+- Presentation-style collaborative mode with:
+  - full-screen question navigation
+  - next-unanswered shortcuts
+  - compact facilitator domain agenda
+  - current-domain progress visibility
 
 ## Results
 
@@ -177,16 +189,21 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - `Latest per team` view
 - `Latest per team + assessment` view
 - Organization-level summary cards
+- Leading rows spotlight
+- Needs-attention spotlight
 - Filters for:
   - team
   - template
   - category
   - domain
   - question
+- Active-filter chip summary
 - Score-by-team chart
 - Domain snapshot across latest submitted state
 - Question snapshot when a question filter is active
 - Current-state table with strongest and weakest domain context
+- Current-state table sorting
+- Inline row expansion with domain drilldown and quick question snapshot
 - Excel-friendly CSV export for current rows plus domain/question snapshots
 - PDF export via print
 - Optional AI Brief slide-over for the current filtered reporting view
