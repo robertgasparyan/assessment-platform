@@ -62,6 +62,9 @@ export function GuestSharedResultsPage() {
               <Badge variant="outline">Invite: {results.guestAccess.inviteLabel}</Badge>
             </div>
           ) : null}
+          <div className="mt-3 text-sm font-medium text-foreground">
+            Submitted on {formatDate(results.submittedAt)}
+          </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Badge variant="success">Submitted</Badge>
             <Badge variant="outline">

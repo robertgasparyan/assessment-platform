@@ -775,6 +775,11 @@ export function ResultsPage() {
           <p className="mt-2 text-muted-foreground">
             {results?.team.name} · {results?.periodLabel} · Template v{results?.templateVersion.versionNumber}
           </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <Badge variant={results?.status === "SUBMITTED" ? "success" : "secondary"}>{results?.status ?? "-"}</Badge>
+            <span className="font-medium text-foreground">Submitted on {formatDate(results?.submittedAt)}</span>
+            <span>Owner: {results?.ownerName || "-"}</span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-3">
           <Badge variant="outline">{results?.periodType ?? "Assessment"}</Badge>
@@ -807,16 +812,6 @@ export function ResultsPage() {
       </div>
 
       <div className="print-hidden grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <div className="rounded-[1.25rem] border bg-white px-4 py-3">
-          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Status</div>
-          <div className="mt-2 flex items-center gap-2">
-            <Badge variant={results?.status === "SUBMITTED" ? "success" : "secondary"}>{results?.status ?? "-"}</Badge>
-          </div>
-        </div>
-        <div className="rounded-[1.25rem] border bg-white px-4 py-3">
-          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Submitted</div>
-          <div className="mt-2 text-sm font-medium">{formatDate(results?.submittedAt)}</div>
-        </div>
         <div className="rounded-[1.25rem] border bg-white px-4 py-3">
           <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Owner</div>
           <div className="mt-2 text-sm font-medium">{results?.ownerName || "-"}</div>

@@ -10,6 +10,18 @@ function formatScore(value: number | null | undefined) {
   return typeof value === "number" ? value.toFixed(2) : "-";
 }
 
+function formatDate(value: string | null | undefined) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(value));
+}
+
 export function SharedResultsPage() {
   const { token = "" } = useParams();
   const resultsQuery = useQuery({
@@ -44,6 +56,9 @@ export function SharedResultsPage() {
           <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
             {results.team.name} · {results.periodLabel} · Template v{results.templateVersion.versionNumber}
           </p>
+          <div className="mt-3 text-sm font-medium text-foreground">
+            Submitted on {formatDate(results.submittedAt)}
+          </div>
         </section>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
