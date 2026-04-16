@@ -225,9 +225,9 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 ## Installation and Operations
 
 - OS-specific setup guides:
-  - [Windows](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_WINDOWS.md)
   - [Linux](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_LINUX.md)
   - [macOS](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_MACOS.md)
+  - [Index](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION.md)
 - Database export/import instructions included in installation docs
 - Optional `PG_DUMP_PATH` support for backend-driven PostgreSQL dump export
 - Optional AI environment defaults and `AI_CONFIG_ENCRYPTION_KEY` support for provider secrets

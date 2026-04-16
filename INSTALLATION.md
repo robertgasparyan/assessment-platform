@@ -2,7 +2,6 @@
 
 Use the guide that matches the target machine or deployment target:
 
-- [Windows Installation](C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_WINDOWS.md)
 - [Linux Installation](C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_LINUX.md)
 - [macOS Installation](C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_MACOS.md)
 

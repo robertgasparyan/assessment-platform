@@ -51,6 +51,8 @@ export function TabsTrigger({
         active ? "bg-white text-foreground shadow-sm" : "text-muted-foreground",
         className
       )}
+      data-active={active}
+      data-state={active ? "active" : "inactive"}
       onClick={() => context.setValue(value)}
       type="button"
     >

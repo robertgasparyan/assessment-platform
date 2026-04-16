@@ -49,6 +49,23 @@ function getDueState(dueDate: string | null) {
   return { label: "Scheduled", variant: "outline" as const };
 }
 
+function duePriorityValue(dueDate: string | null | undefined) {
+  if (!dueDate) {
+    return 3;
+  }
+
+  const dueState = getDueState(dueDate);
+  if (dueState?.label === "Overdue") {
+    return 0;
+  }
+
+  if (dueState?.label === "Due soon") {
+    return 1;
+  }
+
+  return 2;
+}
+
 export function DashboardPage() {
   const [teamSearch, setTeamSearch] = useState("");
   const summaryQuery = useQuery({
@@ -102,6 +119,18 @@ export function DashboardPage() {
       );
     });
   }, [summary?.latestSubmittedByTeam, teamSearch]);
+  const focusRuns = useMemo(
+    () =>
+      [...(summary?.myWork.focusRuns ?? [])].sort((a, b) => {
+        const priorityDiff = duePriorityValue(a.dueDate) - duePriorityValue(b.dueDate);
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+
+        return a.title.localeCompare(b.title);
+      }),
+    [summary?.myWork.focusRuns]
+  );
 
   return (
     <div className="space-y-6">
@@ -114,104 +143,6 @@ export function DashboardPage() {
           </p>
         </div>
       </div>
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <StatCard hint="Template library" label="Templates" value={summary?.templates ?? "-"} />
-        <StatCard hint="All assessment runs" label="Runs" value={summary?.runs ?? "-"} />
-        <StatCard hint="Completed assessments" label="Submitted" value={summary?.submittedRuns ?? "-"} />
-        <StatCard hint="Active collaborative drafts" label="Drafts" value={summary?.draftRuns ?? "-"} />
-        <StatCard hint="Teams available for assignment" label="Teams" value={summary?.teams ?? "-"} />
-      </div>
-
-      {summary ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>My work</CardTitle>
-            <CardDescription>
-              {summary.currentUser.role === "ADMIN" || summary.currentUser.role === "TEMPLATE_MANAGER"
-                ? "Your directly assigned active runs, plus team-owned work that still needs attention."
-                : "Active assessments assigned to you or visible through your team memberships."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4 xl:grid-cols-2">
-            <div className="rounded-[1.25rem] border bg-white p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">Assigned to me</div>
-                  <div className="text-sm text-muted-foreground">Runs where you are the explicit owner.</div>
-                </div>
-                <Badge variant="outline">{summary.myWork.assignedRuns.length}</Badge>
-              </div>
-              <div className="mt-4 space-y-3">
-                {summary.myWork.assignedRuns.length ? (
-                  summary.myWork.assignedRuns.map((run) => {
-                    const dueState = getDueState(run.dueDate);
-                    return (
-                      <div className="rounded-[1rem] border border-border/80 p-3" key={`assigned-${run.id}`}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <Link className="font-medium text-primary" to={`/assessments/${run.id}`} state={{ returnTo: "/assessments?tab=active" }}>
-                              {run.title}
-                            </Link>
-                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
-                          </div>
-                          <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          <span>Due {formatDate(run.dueDate)}</span>
-                          {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : null}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                    No active runs are currently assigned to you.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-[1.25rem] border bg-white p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">My team queue</div>
-                  <div className="text-sm text-muted-foreground">Other active runs visible through your team memberships.</div>
-                </div>
-                <Badge variant="outline">{summary.myWork.teamRuns.length}</Badge>
-              </div>
-              <div className="mt-4 space-y-3">
-                {summary.myWork.teamRuns.length ? (
-                  summary.myWork.teamRuns.map((run) => {
-                    const dueState = getDueState(run.dueDate);
-                    return (
-                      <div className="rounded-[1rem] border border-border/80 p-3" key={`team-${run.id}`}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <Link className="font-medium text-primary" to={`/assessments/${run.id}`} state={{ returnTo: "/assessments?tab=active" }}>
-                              {run.title}
-                            </Link>
-                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
-                          </div>
-                          <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          <span>Due {formatDate(run.dueDate)}</span>
-                          {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : null}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                    No additional team runs currently need attention.
-                  </div>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
 
       <Card>
         <CardHeader>
@@ -236,16 +167,16 @@ export function DashboardPage() {
 
             return (
               <Link
-                className={`group rounded-[1.5rem] p-5 transition ${cardTone}`}
+                className={`group rounded-[1.2rem] p-3.5 transition ${cardTone}`}
                 key={item.to}
                 to={item.to}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className={`rounded-2xl p-3 ${iconTone}`}>
-                    <Icon className="h-5 w-5" />
+                  <div className={`rounded-xl p-2 ${iconTone}`}>
+                    <Icon className="h-4 w-4" />
                   </div>
                   <ArrowRight
-                    className={`h-4 w-4 transition group-hover:translate-x-0.5 ${
+                    className={`h-3.5 w-3.5 transition group-hover:translate-x-0.5 ${
                       item.tone === "active"
                         ? "text-primary"
                         : item.tone === "submitted"
@@ -254,13 +185,176 @@ export function DashboardPage() {
                     }`}
                   />
                 </div>
-                <div className="mt-5 text-lg font-semibold">{item.title}</div>
-                <div className="mt-2 text-sm text-muted-foreground">{item.description}</div>
+                <div className="mt-3 text-[0.95rem] font-semibold">{item.title}</div>
+                <div className="mt-1 text-sm leading-5 text-muted-foreground">{item.description}</div>
               </Link>
             );
           })}
         </CardContent>
       </Card>
+
+      {summary ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>My work</CardTitle>
+            <CardDescription>
+              {summary.currentUser.role === "ADMIN" || summary.currentUser.role === "TEMPLATE_MANAGER"
+                ? "Your directly assigned active runs, plus team-owned work that still needs attention."
+                : "Active assessments assigned to you or visible through your team memberships."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-[1.1rem] border bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Assigned</div>
+                <div className="mt-2 text-2xl font-semibold">{summary.myWork.assignedCount}</div>
+              </div>
+              <div className="rounded-[1.1rem] border bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Team queue</div>
+                <div className="mt-2 text-2xl font-semibold">{summary.myWork.teamCount}</div>
+              </div>
+              <div className="rounded-[1.1rem] border bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Overdue</div>
+                <div className="mt-2 text-2xl font-semibold">{summary.myWork.overdueCount}</div>
+              </div>
+              <div className="rounded-[1.1rem] border bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Due soon</div>
+                <div className="mt-2 text-2xl font-semibold">{summary.myWork.dueSoonCount}</div>
+              </div>
+              <div className="rounded-[1.1rem] border bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Guest-enabled</div>
+                <div className="mt-2 text-2xl font-semibold">{summary.myWork.guestEnabledCount}</div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
+              <div className="rounded-[1.25rem] border bg-[linear-gradient(135deg,_rgba(238,248,232,0.92),_rgba(255,255,255,0.98))] p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">Needs attention now</div>
+                    <div className="text-sm text-muted-foreground">A bounded priority list so the dashboard stays useful even when the wider queue grows.</div>
+                  </div>
+                  <Link className="text-sm font-medium text-primary" to="/my-assessments">
+                    Open my assessments
+                  </Link>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {focusRuns.length ? (
+                    focusRuns.map((run) => {
+                      const dueState = getDueState(run.dueDate);
+                      return (
+                        <div className="rounded-[1rem] border border-primary/15 bg-white/90 p-4" key={`focus-${run.id}`}>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Link className="font-medium text-primary" state={{ returnTo: "/assessments?tab=active" }} to={`/assessments/${run.id}`}>
+                                  {run.title}
+                                </Link>
+                                <Badge variant={run.ownership === "assigned" ? "default" : "outline"}>
+                                  {run.ownership === "assigned" ? "Assigned to me" : "Team queue"}
+                                </Badge>
+                                {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                              </div>
+                              <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
+                            </div>
+                            <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <span>Due {formatDate(run.dueDate)}</span>
+                            {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : <Badge variant="outline">No due date</Badge>}
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                      No active work currently needs attention.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-[1.25rem] border bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">Assigned to me</div>
+                      <div className="text-sm text-muted-foreground">Preview of your owned active runs.</div>
+                    </div>
+                    <Badge variant="outline">{summary.myWork.assignedCount}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {summary.myWork.assignedRuns.length ? (
+                      summary.myWork.assignedRuns.map((run) => {
+                        const dueState = getDueState(run.dueDate);
+                        return (
+                          <div className="rounded-[1rem] border border-border/80 p-3" key={`assigned-${run.id}`}>
+                            <Link className="font-medium text-primary" state={{ returnTo: "/assessments?tab=active" }} to={`/assessments/${run.id}`}>
+                              {run.title}
+                            </Link>
+                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                              <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
+                              {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                              {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : <Badge variant="outline">No due date</Badge>}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                        No active runs are currently assigned to you.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-[1.25rem] border bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">My team queue</div>
+                      <div className="text-sm text-muted-foreground">Preview only. Deeper browsing belongs in `My assessments`.</div>
+                    </div>
+                    <Badge variant="outline">{summary.myWork.teamCount}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {summary.myWork.teamRuns.length ? (
+                      summary.myWork.teamRuns.map((run) => {
+                        const dueState = getDueState(run.dueDate);
+                        return (
+                          <div className="rounded-[1rem] border border-border/80 p-3" key={`team-${run.id}`}>
+                            <Link className="font-medium text-primary" state={{ returnTo: "/assessments?tab=active" }} to={`/assessments/${run.id}`}>
+                              {run.title}
+                            </Link>
+                            <div className="mt-1 text-sm text-muted-foreground">{run.teamName}</div>
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                              <Badge variant={run.status === "IN_PROGRESS" ? "default" : "secondary"}>{run.status}</Badge>
+                              {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                              {dueState ? <Badge variant={dueState.variant}>{dueState.label}</Badge> : <Badge variant="outline">No due date</Badge>}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                        No additional team runs currently need attention.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatCard hint="Template library" label="Templates" value={summary?.templates ?? "-"} />
+        <StatCard hint="All assessment runs" label="Runs" value={summary?.runs ?? "-"} />
+        <StatCard hint="Completed assessments" label="Submitted" value={summary?.submittedRuns ?? "-"} />
+        <StatCard hint="Active collaborative drafts" label="Drafts" value={summary?.draftRuns ?? "-"} />
+        <StatCard hint="Teams available for assignment" label="Teams" value={summary?.teams ?? "-"} />
+      </div>
 
       <Card>
         <CardHeader>
@@ -298,9 +392,12 @@ export function DashboardPage() {
                 <TableRow key={`latest-submitted-team-${run.id}`}>
                   <TableCell className="font-medium">{run.teamName}</TableCell>
                   <TableCell>
-                    <Link className="font-medium text-primary" to={`/assessments/${run.id}/results`}>
-                      {run.title}
-                    </Link>
+                    <div className="space-y-1">
+                      <Link className="font-medium text-primary" to={`/assessments/${run.id}/results`}>
+                        {run.title}
+                      </Link>
+                      {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                    </div>
                   </TableCell>
                   <TableCell>{run.templateName}</TableCell>
                   <TableCell>{run.periodLabel}</TableCell>

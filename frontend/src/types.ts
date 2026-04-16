@@ -93,6 +93,26 @@ export type ReportShareLink = {
   };
 };
 
+export type GuestAssessmentLink = {
+  id: string;
+  token: string;
+  guestUrl: string;
+  inviteLabel: string | null;
+  guestDisplayName: string | null;
+  guestEmail: string | null;
+  isRevoked: boolean;
+  expiresAt: string | null;
+  startedAt: string | null;
+  lastAccessedAt: string | null;
+  submittedAt: string | null;
+  createdAt: string;
+};
+
+export type GuestParticipationSettings = {
+  guestParticipationEnabled: boolean;
+  guestResultsVisible: boolean;
+};
+
 export type ReportEmailDeliverySettings = {
   enabled: boolean;
   configured: boolean;
@@ -323,6 +343,7 @@ export type AssessmentRunSummary = {
   } | null;
   ownerName?: string | null;
   dueDate: string | null;
+  guestParticipationEnabled: boolean;
   periodType: AssessmentPeriodType;
   periodLabel: string;
   periodBucket: string;
@@ -374,6 +395,8 @@ export type AssessmentRunDetail = {
   ownerName?: string | null;
   assignmentHistory: AssignmentHistoryEntry[];
   dueDate: string | null;
+  guestParticipationEnabled: boolean;
+  guestResultsVisible: boolean;
   periodType: AssessmentPeriodType;
   periodLabel: string;
   periodBucket: string;
@@ -496,6 +519,32 @@ export type SharedAssessmentResults = AssessmentResults & {
   };
 };
 
+export type GuestAssessmentRunDetail = AssessmentRunDetail & {
+  guestAccess: {
+    token: string;
+    expiresAt: string | null;
+    createdAt: string;
+    inviteLabel: string | null;
+    guestDisplayName: string | null;
+    guestEmail: string | null;
+    submittedAt: string | null;
+    resultsVisible: boolean;
+  };
+};
+
+export type GuestSharedAssessmentResults = SharedAssessmentResults & {
+  guestAccess: {
+    token: string;
+    expiresAt: string | null;
+    createdAt: string;
+    inviteLabel: string | null;
+    guestDisplayName: string | null;
+    guestEmail: string | null;
+    submittedAt: string | null;
+    resultsVisible: boolean;
+  };
+};
+
 export type DashboardSummary = {
   currentUser: {
     id: string;
@@ -516,6 +565,7 @@ export type DashboardSummary = {
     periodLabel: string;
     submittedAt: string | null;
     overallScore: number | null;
+    guestParticipationEnabled: boolean;
   }>;
   latestRuns: Array<{
     id: string;
@@ -527,12 +577,27 @@ export type DashboardSummary = {
     updatedAt: string;
   }>;
   myWork: {
+    assignedCount: number;
+    teamCount: number;
+    overdueCount: number;
+    dueSoonCount: number;
+    guestEnabledCount: number;
+    focusRuns: Array<{
+      id: string;
+      title: string;
+      teamName: string;
+      dueDate: string | null;
+      status: "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "ARCHIVED";
+      guestParticipationEnabled: boolean;
+      ownership: "assigned" | "team";
+    }>;
     assignedRuns: Array<{
       id: string;
       title: string;
       teamName: string;
       dueDate: string | null;
       status: "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "ARCHIVED";
+      guestParticipationEnabled: boolean;
     }>;
     teamRuns: Array<{
       id: string;
@@ -540,6 +605,7 @@ export type DashboardSummary = {
       teamName: string;
       dueDate: string | null;
       status: "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "ARCHIVED";
+      guestParticipationEnabled: boolean;
     }>;
   };
 };

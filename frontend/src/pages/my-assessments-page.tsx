@@ -52,7 +52,12 @@ function RunTable({
             <TableBody>
               {runs.map((run) => (
                 <TableRow key={run.id}>
-                  <TableCell className="font-medium">{run.title}</TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="font-medium">{run.title}</div>
+                      {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                    </div>
+                  </TableCell>
                   <TableCell>{run.team.name}</TableCell>
                   <TableCell>{run.periodLabel}</TableCell>
                   <TableCell>{formatDate(run.dueDate)}</TableCell>

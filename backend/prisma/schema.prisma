@@ -55,6 +55,7 @@ model User {
   assignmentFromEvents AssessmentRunAssignment[] @relation("AssessmentRunFromUser")
   assignmentToEvents   AssessmentRunAssignment[] @relation("AssessmentRunToUser")
   createdShareLinks    ReportShareLink[]
+  createdGuestAssessmentLinks GuestAssessmentLink[]
   auditLogs            AuditLog[]
   notifications        Notification[]
 }
@@ -210,6 +211,8 @@ model AssessmentRun {
   overallScore      Float?
   submissionSummary String?
   submittedAt       DateTime?
+  guestParticipationEnabled Boolean     @default(false)
+  guestResultsVisible Boolean          @default(false)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   template          AssessmentTemplate  @relation(fields: [templateId], references: [id])
@@ -219,6 +222,7 @@ model AssessmentRun {
   responses         AssessmentResponse[]
   assignmentHistory AssessmentRunAssignment[]
   shareLinks        ReportShareLink[]
+  guestLinks        GuestAssessmentLink[]
   aiSummaries       AiAssessmentSummary[]
   auditLogs         AuditLog[]
   notifications     Notification[]
@@ -264,6 +268,24 @@ model ReportShareLink {
   createdAt       DateTime      @default(now())
   assessmentRun   AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
   createdByUser   User          @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+}
+
+model GuestAssessmentLink {
+  id                String        @id @default(cuid())
+  token             String        @unique
+  assessmentRunId   String
+  createdByUserId   String
+  inviteLabel       String?
+  guestDisplayName  String?
+  guestEmail        String?
+  isRevoked         Boolean       @default(false)
+  expiresAt         DateTime?
+  startedAt         DateTime?
+  lastAccessedAt    DateTime?
+  submittedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  assessmentRun     AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  createdByUser     User          @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
 }
 
 model AuditLog {

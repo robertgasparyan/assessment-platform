@@ -15,6 +15,8 @@ const AssessmentsPage = lazy(() => import("@/pages/assessments-page").then((modu
 const MyAssessmentsPage = lazy(() => import("@/pages/my-assessments-page").then((module) => ({ default: module.MyAssessmentsPage })));
 const ReportsPage = lazy(() => import("@/pages/reports-page").then((module) => ({ default: module.ReportsPage })));
 const SharedResultsPage = lazy(() => import("@/pages/shared-results-page").then((module) => ({ default: module.SharedResultsPage })));
+const GuestAssessmentPage = lazy(() => import("@/pages/guest-assessment-page").then((module) => ({ default: module.GuestAssessmentPage })));
+const GuestSharedResultsPage = lazy(() => import("@/pages/guest-shared-results-page").then((module) => ({ default: module.GuestSharedResultsPage })));
 const AssessmentRunPage = lazy(() =>
   import("@/pages/assessment-run-page").then((module) => ({ default: module.AssessmentRunPage }))
 );
@@ -55,6 +57,18 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/shared-results/:token" element={<SharedResultsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    );
+  }
+
+  if (window.location.pathname.startsWith("/guest-assessments/")) {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/guest-assessments/:token" element={<GuestAssessmentPage />} />
+          <Route path="/guest-assessments/:token/results" element={<GuestSharedResultsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

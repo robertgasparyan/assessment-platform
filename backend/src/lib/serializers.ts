@@ -190,6 +190,8 @@ export function serializeAssessmentRun(run: AssessmentRunWithAssignmentHistory) 
           toOwnerName: item.toOwnerName
         })),
     dueDate: run.dueDate,
+    guestParticipationEnabled: run.guestParticipationEnabled,
+    guestResultsVisible: run.guestResultsVisible,
     periodType: run.periodType,
     periodLabel: run.periodLabel,
     periodBucket: run.periodBucket,

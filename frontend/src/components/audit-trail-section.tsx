@@ -44,6 +44,13 @@ export function AuditTrailSection() {
     () => (auditQuery.data ?? []).filter((entry) => entry.entityType === "ai_summary" || entry.action.includes(".ai_")),
     [auditQuery.data]
   );
+  const guestLogs = useMemo(
+    () =>
+      (auditQuery.data ?? []).filter(
+        (entry) => entry.entityType === "guest_assessment_link" || entry.action.includes(".guest_")
+      ),
+    [auditQuery.data]
+  );
 
   const aiSummary = useMemo(() => {
     const byAction = new Map<string, number>();
@@ -57,6 +64,20 @@ export function AuditTrailSection() {
       topActions: [...byAction.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
     };
   }, [aiLogs]);
+  const guestSummary = useMemo(() => {
+    const byAction = new Map<string, number>();
+    for (const entry of guestLogs) {
+      byAction.set(entry.action, (byAction.get(entry.action) ?? 0) + 1);
+    }
+
+    return {
+      total: guestLogs.length,
+      created: guestLogs.filter((entry) => entry.action === "assessment_run.guest_link_created").length,
+      submitted: guestLogs.filter((entry) => entry.action === "assessment_run.guest_submitted").length,
+      revoked: guestLogs.filter((entry) => entry.action === "assessment_run.guest_link_revoked").length,
+      topActions: [...byAction.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
+    };
+  }, [guestLogs]);
 
   return (
     <div className="space-y-6">
@@ -116,6 +137,74 @@ export function AuditTrailSection() {
                 <TableRow>
                   <TableCell className="text-muted-foreground" colSpan={4}>
                     No AI audit activity found yet.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Guest activity</CardTitle>
+          <CardDescription>Focused view for external guest invite creation, submissions, revocations, and guest-session events.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="text-sm text-muted-foreground">Guest audit entries</div>
+              <div className="mt-2 text-2xl font-semibold">{guestSummary.total}</div>
+            </div>
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="text-sm text-muted-foreground">Links created</div>
+              <div className="mt-2 text-2xl font-semibold">{guestSummary.created}</div>
+            </div>
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="text-sm text-muted-foreground">Guest submissions</div>
+              <div className="mt-2 text-2xl font-semibold">{guestSummary.submitted}</div>
+            </div>
+            <div className="rounded-[1.25rem] border bg-white p-4">
+              <div className="text-sm text-muted-foreground">Links revoked</div>
+              <div className="mt-2 text-2xl font-semibold">{guestSummary.revoked}</div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {guestSummary.topActions.map(([action, count]) => (
+              <div className="rounded-[1rem] border bg-muted/20 px-4 py-3 text-sm text-muted-foreground" key={action}>
+                <span className="font-medium text-foreground">{action}</span> · {count}
+              </div>
+            ))}
+            {!guestSummary.topActions.length ? (
+              <div className="rounded-[1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                No guest activity has been recorded yet.
+              </div>
+            ) : null}
+          </div>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Time</TableHead>
+                <TableHead>Actor</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Summary</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {guestLogs.slice(0, 20).map((entry) => (
+                <TableRow key={`guest-${entry.id}`}>
+                  <TableCell>{formatDate(entry.createdAt)}</TableCell>
+                  <TableCell>{entry.actorUser?.displayName ?? "System"}</TableCell>
+                  <TableCell>{entry.action}</TableCell>
+                  <TableCell>{entry.summary}</TableCell>
+                </TableRow>
+              ))}
+              {!guestLogs.length ? (
+                <TableRow>
+                  <TableCell className="text-muted-foreground" colSpan={4}>
+                    No guest audit activity found yet.
                   </TableCell>
                 </TableRow>
               ) : null}

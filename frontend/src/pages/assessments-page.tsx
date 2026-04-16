@@ -39,6 +39,15 @@ function toIsoDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`).toISOString();
 }
 
+function formatDateLabel(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(new Date(`${value}T00:00:00.000Z`));
+}
+
 function formatDate(value: string | null) {
   if (!value) {
     return "-";
@@ -135,7 +144,10 @@ function RunTable({
         {runs.map((run) => (
           <TableRow className={getDueDateState(run)?.label === "Overdue" ? "bg-secondary/70" : undefined} key={run.id}>
             <TableCell>
-              <div className="font-medium">{run.title}</div>
+              <div className="space-y-1">
+                <div className="font-medium">{run.title}</div>
+                {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+              </div>
             </TableCell>
             <TableCell>{run.team.name}</TableCell>
             <TableCell>
@@ -206,10 +218,12 @@ export function AssessmentsPage() {
   const initialTab = searchParams.get("tab");
   const [pageTab, setPageTab] = useState(initialTab === "active" || initialTab === "submitted" || initialTab === "create" ? initialTab : "create");
   const [title, setTitle] = useState("");
+  const [titleManuallyEdited, setTitleManuallyEdited] = useState(false);
   const [templateId, setTemplateId] = useState("");
   const [teamId, setTeamId] = useState("");
   const [ownerUserId, setOwnerUserId] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [guestParticipationEnabled, setGuestParticipationEnabled] = useState(false);
   const [periodType, setPeriodType] = useState<AssessmentPeriodType>("QUARTER");
   const [periodLabel, setPeriodLabel] = useState("");
   const [year, setYear] = useState(new Date().getFullYear());
@@ -222,6 +236,7 @@ export function AssessmentsPage() {
   const [teamFilter, setTeamFilter] = useState("all");
   const [templateFilter, setTemplateFilter] = useState("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
+  const [guestFilter, setGuestFilter] = useState("all");
   const [periodTypeFilter, setPeriodTypeFilter] = useState("all");
   const [dueDateFilter, setDueDateFilter] = useState("all");
   const [submittedDateFrom, setSubmittedDateFrom] = useState("");
@@ -280,20 +295,46 @@ export function AssessmentsPage() {
   const canCreateRuns = user?.role === "ADMIN" || user?.role === "TEAM_LEAD";
 
   const selectedTemplate = (templatesQuery.data ?? []).find((template) => template.id === templateId);
+  const selectedTeam = (teamsQuery.data ?? []).find((team) => team.id === teamId);
   const ownerFilterOptions = useMemo(
     () => [{ value: "all", label: "All assignees" }, { value: "unassigned", label: "Unassigned" }, ...ownerOptions.filter((option) => option.value)],
     [ownerOptions]
   );
+  const suggestedPeriodLabel = useMemo(() => {
+    if (periodLabel.trim()) {
+      return periodLabel.trim();
+    }
+
+    if (periodType === "QUARTER") {
+      return `Q${quarter} ${year}`;
+    }
+
+    if (periodType === "CUSTOM_RANGE") {
+      return startDate && endDate ? `${formatDateLabel(startDate)} - ${formatDateLabel(endDate)}` : "";
+    }
+
+    return referenceDate ? formatDateLabel(referenceDate) : "";
+  }, [endDate, periodLabel, periodType, quarter, referenceDate, startDate, year]);
+  const suggestedTitle = useMemo(() => {
+    if (!selectedTemplate?.name || !selectedTeam?.name || !suggestedPeriodLabel) {
+      return "";
+    }
+
+    const parts = [selectedTemplate.name, selectedTeam.name, suggestedPeriodLabel];
+    return parts.join(" - ");
+  }, [selectedTeam?.name, selectedTemplate?.name, suggestedPeriodLabel]);
+  const effectiveTitle = titleManuallyEdited ? title : suggestedTitle;
 
   const createPayload = useMemo(() => {
     const basePayload = {
-      title,
+      title: effectiveTitle,
       teamId,
       templateId,
       templateVersionId: selectedTemplate?.latestVersion?.id ?? "",
       ownerUserId: ownerUserId || undefined,
       ownerName: selectedOwner?.displayName || undefined,
       dueDate: dueDate ? toIsoDate(dueDate) : undefined,
+      guestParticipationEnabled,
       periodType,
       periodLabel: periodLabel.trim() || undefined
     };
@@ -316,7 +357,7 @@ export function AssessmentsPage() {
       periodType,
       referenceDate: referenceDate ? toIsoDate(referenceDate) : ""
     };
-  }, [dueDate, endDate, ownerUserId, periodLabel, periodType, quarter, referenceDate, selectedOwner?.displayName, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, title, year]);
+  }, [dueDate, effectiveTitle, endDate, guestParticipationEnabled, ownerUserId, periodLabel, periodType, quarter, referenceDate, selectedOwner?.displayName, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, year]);
 
   const periodReady =
     periodType === "QUARTER"
@@ -325,7 +366,7 @@ export function AssessmentsPage() {
         ? Boolean(startDate && endDate)
         : Boolean(referenceDate);
 
-  const createReady = Boolean(title && teamId && templateId && selectedTemplate?.latestVersion?.id && periodReady);
+  const createReady = Boolean(effectiveTitle.trim() && teamId && templateId && selectedTemplate?.latestVersion?.id && periodReady);
 
   const duplicateCheckQuery = useQuery({
     queryKey: ["assessment-run-duplicate-check", createPayload],
@@ -347,8 +388,10 @@ export function AssessmentsPage() {
       toast.success("Assessment run created");
       queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
       setTitle("");
+      setTitleManuallyEdited(false);
       setOwnerUserId("");
       setDueDate("");
+      setGuestParticipationEnabled(false);
       setPeriodLabel("");
       setStartDate("");
       setEndDate("");
@@ -408,10 +451,14 @@ export function AssessmentsPage() {
         ownerFilter === "all"
         || (ownerFilter === "unassigned" && !run.ownerUser?.id)
         || run.ownerUser?.id === ownerFilter;
+      const matchesGuest =
+        guestFilter === "all"
+        || (guestFilter === "guest" && run.guestParticipationEnabled)
+        || (guestFilter === "internal" && !run.guestParticipationEnabled);
       const matchesPeriodType = periodTypeFilter === "all" || run.periodType === periodTypeFilter;
-      return matchesSearch && matchesTeam && matchesTemplate && matchesOwner && matchesPeriodType;
+      return matchesSearch && matchesTeam && matchesTemplate && matchesOwner && matchesGuest && matchesPeriodType;
     });
-  }, [ownerFilter, periodTypeFilter, runs, search, teamFilter, templateFilter]);
+  }, [guestFilter, ownerFilter, periodTypeFilter, runs, search, teamFilter, templateFilter]);
 
   const filteredActiveRuns = commonFilteredRuns
     .filter((run) => run.status === "DRAFT" || run.status === "IN_PROGRESS")
@@ -474,7 +521,7 @@ export function AssessmentsPage() {
   }).length;
 
   const filterBlock = (
-    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-6">
+    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-7">
       <div className="space-y-2">
         <Label>Search runs</Label>
         <Input placeholder="Title, team, template, owner, or period" value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -498,6 +545,18 @@ export function AssessmentsPage() {
       <div className="space-y-2">
         <Label>Assignee</Label>
         <Select options={ownerFilterOptions} value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label>Participation</Label>
+        <Select
+          options={[
+            { value: "all", label: "All runs" },
+            { value: "guest", label: "Guest-enabled" },
+            { value: "internal", label: "Internal only" }
+          ]}
+          value={guestFilter}
+          onChange={(event) => setGuestFilter(event.target.value)}
+        />
       </div>
       <div className="space-y-2">
         <Label>Period type</Label>
@@ -531,7 +590,7 @@ export function AssessmentsPage() {
 
   const submittedFilterBlock = (
     <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <div className="space-y-2 xl:col-span-2">
           <Label>Search submitted runs</Label>
           <Input
@@ -559,6 +618,18 @@ export function AssessmentsPage() {
         <div className="space-y-2">
           <Label>Assignee</Label>
           <Select options={ownerFilterOptions} value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label>Participation</Label>
+          <Select
+            options={[
+              { value: "all", label: "All runs" },
+              { value: "guest", label: "Guest-enabled" },
+              { value: "internal", label: "Internal only" }
+            ]}
+            value={guestFilter}
+            onChange={(event) => setGuestFilter(event.target.value)}
+          />
         </div>
       </div>
 
@@ -606,6 +677,7 @@ export function AssessmentsPage() {
               setTeamFilter("all");
               setTemplateFilter("all");
               setOwnerFilter("all");
+              setGuestFilter("all");
               setPeriodTypeFilter("all");
               setSubmittedDateFrom("");
               setSubmittedDateTo("");
@@ -733,10 +805,50 @@ export function AssessmentsPage() {
         }}
         value={pageTab}
       >
-        <TabsList className={`grid w-full ${canCreateRuns ? "grid-cols-3" : "grid-cols-2"}`}>
-          {canCreateRuns ? <TabsTrigger value="create">Create</TabsTrigger> : null}
-          <TabsTrigger value="active">Active</TabsTrigger>
-          <TabsTrigger value="submitted">Submitted</TabsTrigger>
+        <TabsList
+          className={`grid w-full gap-2 rounded-[1.75rem] border border-primary/15 bg-[linear-gradient(135deg,_rgba(238,248,232,0.95),_rgba(244,244,244,0.92))] p-2 shadow-sm ${canCreateRuns ? "grid-cols-3" : "grid-cols-2"}`}
+        >
+          {canCreateRuns ? (
+            <TabsTrigger
+              className={`rounded-[1.15rem] border px-4 py-3 text-left ${
+                pageTab === "create"
+                  ? "border-primary/30 bg-primary text-primary-foreground shadow-[0_14px_30px_rgba(114,191,68,0.28)]"
+                  : "border-transparent bg-white/60 text-muted-foreground hover:bg-white/85"
+              }`}
+              value="create"
+            >
+              <span className="block text-sm font-semibold">Create</span>
+              <span className={`mt-1 block text-xs ${pageTab === "create" ? "text-primary-foreground/80" : "text-muted-foreground"}`}>Launch a new run</span>
+            </TabsTrigger>
+          ) : null}
+          <TabsTrigger
+            className={`rounded-[1.15rem] border px-4 py-3 text-left ${
+              pageTab === "active"
+                ? "border-primary/30 bg-[linear-gradient(135deg,_rgba(114,191,68,0.92),_rgba(96,170,56,0.96))] text-white shadow-[0_14px_30px_rgba(114,191,68,0.28)]"
+                : "border-transparent bg-white/60 text-muted-foreground hover:bg-white/85"
+            }`}
+            value="active"
+          >
+            <span className="flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold">Active</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${pageTab === "active" ? "bg-white/20 text-white" : "bg-primary/10 text-primary"}`}>{activeRuns.length}</span>
+            </span>
+            <span className={`mt-1 block text-xs ${pageTab === "active" ? "text-white/80" : "text-muted-foreground"}`}>Drafts and in-progress work</span>
+          </TabsTrigger>
+          <TabsTrigger
+            className={`rounded-[1.15rem] border px-4 py-3 text-left ${
+              pageTab === "submitted"
+                ? "border-slate-400 bg-[linear-gradient(135deg,_rgba(85,85,85,0.96),_rgba(51,51,51,0.98))] text-white shadow-[0_14px_30px_rgba(85,85,85,0.22)]"
+                : "border-transparent bg-white/60 text-muted-foreground hover:bg-white/85"
+            }`}
+            value="submitted"
+          >
+            <span className="flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold">Submitted</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${pageTab === "submitted" ? "bg-white/15 text-white" : "bg-primary/10 text-primary"}`}>{submittedRuns.length}</span>
+            </span>
+            <span className={`mt-1 block text-xs ${pageTab === "submitted" ? "text-white/75" : "text-muted-foreground"}`}>Completed runs and results</span>
+          </TabsTrigger>
         </TabsList>
 
         {canCreateRuns ? (
@@ -750,8 +862,32 @@ export function AssessmentsPage() {
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2 md:col-span-2">
-                <Label>Title</Label>
-                <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Label>Run title</Label>
+                  {titleManuallyEdited && suggestedTitle ? (
+                    <Button
+                      onClick={() => {
+                        setTitle("");
+                        setTitleManuallyEdited(false);
+                      }}
+                      type="button"
+                      variant="ghost"
+                    >
+                      Reset to suggested title
+                    </Button>
+                  ) : null}
+                </div>
+                <Input
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    setTitleManuallyEdited(true);
+                  }}
+                  placeholder="A suggested title will be generated automatically"
+                  value={effectiveTitle}
+                />
+                <div className="text-sm text-muted-foreground">
+                  A suggested title is generated from the template, team, and period. Edit only if you need a custom label.
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Template</Label>
@@ -854,6 +990,23 @@ export function AssessmentsPage() {
                   </label>
                 </div>
               ) : null}
+
+              <div className="space-y-2 md:col-span-2">
+                <label className="flex items-start gap-3 rounded-[1rem] border bg-muted/20 px-4 py-3 text-sm">
+                  <input
+                    checked={guestParticipationEnabled}
+                    className="mt-0.5"
+                    onChange={(event) => setGuestParticipationEnabled(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="space-y-1">
+                    <span className="block font-medium text-foreground">This run includes guest participants</span>
+                    <span className="block text-muted-foreground">
+                      Pre-enable guest participation so external links can be managed as soon as the run is created.
+                    </span>
+                  </span>
+                </label>
+              </div>
 
               <div className="md:col-span-2">
                 <Button

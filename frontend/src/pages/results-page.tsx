@@ -27,9 +27,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { useAuth } from "@/features/auth-context";
 import { api } from "@/lib/api";
 import { downloadCsv } from "@/lib/export";
-import type { AiExecutiveSummary, AiResultsAnswer, AiStatus, AssessmentResults, ReportEmailDeliverySettings, ReportShareLink, SendReportEmailResponse } from "@/types";
+import type { AiExecutiveSummary, AiResultsAnswer, AiStatus, AssessmentResults, GuestAssessmentLink, ReportEmailDeliverySettings, ReportShareLink, SendReportEmailResponse } from "@/types";
 import { toast } from "sonner";
 
 type QuestionDelta = AssessmentResults["delta"]["questions"][number];
@@ -258,6 +259,7 @@ function ResultsPageSkeleton() {
 }
 
 export function ResultsPage() {
+  const { user } = useAuth();
   const location = useLocation();
   const { runId = "" } = useParams();
   const [pageMode, setPageMode] = useState("overview");
@@ -287,6 +289,17 @@ export function ResultsPage() {
     queryKey: ["assessment-share-links", runId],
     queryFn: () => api.get<ReportShareLink[]>(`/assessment-runs/${runId}/share-links`),
     enabled: Boolean(runId)
+  });
+  const guestLinksQuery = useQuery({
+    queryKey: ["assessment-guest-links", runId],
+    queryFn: () => api.get<GuestAssessmentLink[]>(`/assessment-runs/${runId}/guest-links`),
+    enabled: Boolean(
+      runId
+      && user
+      && resultsQuery.data
+      && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || resultsQuery.data.ownerUser?.id === user.id)
+      && resultsQuery.data.status === "SUBMITTED"
+    )
   });
   const reportEmailSettingsQuery = useQuery({
     queryKey: ["report-email-delivery-settings"],
@@ -371,6 +384,7 @@ export function ResultsPage() {
 
   const results = resultsQuery.data;
   const shareLinks = shareLinksQuery.data ?? [];
+  const guestLinks = guestLinksQuery.data ?? [];
   const shareLinkStats = useMemo(() => {
     const stats = {
       active: 0,
@@ -391,6 +405,26 @@ export function ResultsPage() {
 
     return stats;
   }, [shareLinks]);
+  const guestLinkStats = useMemo(() => {
+    const stats = {
+      active: 0,
+      submitted: 0,
+      inactive: 0
+    };
+
+    for (const link of guestLinks) {
+      const isExpired = Boolean(link.expiresAt && new Date(link.expiresAt) < new Date());
+      if (link.submittedAt) {
+        stats.submitted += 1;
+      } else if (link.isRevoked || isExpired) {
+        stats.inactive += 1;
+      } else {
+        stats.active += 1;
+      }
+    }
+
+    return stats;
+  }, [guestLinks]);
   const reportEmailUnavailableReason = !reportEmailSettingsQuery.data?.available
     ? reportEmailSettingsQuery.data?.enabled && !reportEmailSettingsQuery.data?.configured
       ? "Email sending is enabled, but SMTP is not fully configured by the administrator yet."
@@ -816,6 +850,70 @@ export function ResultsPage() {
             <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
               Manage secure links and email sharing from the report sharing workspace without crowding the results page.
             </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {results?.status === "SUBMITTED" && guestLinksQuery.data ? (
+        <Card className="print-hidden">
+          <CardHeader>
+            <CardTitle>Guest participation history</CardTitle>
+            <CardDescription>Review which guest links were created, opened, and submitted for this assessment.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{guestLinkStats.active} active</Badge>
+              <Badge variant="success">{guestLinkStats.submitted} submitted</Badge>
+              <Badge variant="secondary">{guestLinkStats.inactive} inactive</Badge>
+              <Badge variant={results.guestResultsVisible ? "outline" : "secondary"}>
+                {results.guestResultsVisible ? "Guest results visible" : "Guest results hidden"}
+              </Badge>
+            </div>
+            {guestLinks.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Invite</TableHead>
+                    <TableHead>Participant</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Opened</TableHead>
+                    <TableHead>Submitted</TableHead>
+                    <TableHead>Expires</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {guestLinks.map((link) => {
+                    const isExpired = Boolean(link.expiresAt && new Date(link.expiresAt) < new Date());
+                    const statusLabel = link.submittedAt ? "Submitted" : link.isRevoked ? "Revoked" : isExpired ? "Expired" : "Active";
+                    const statusVariant = link.submittedAt ? "success" : link.isRevoked || isExpired ? "secondary" : "outline";
+
+                    return (
+                      <TableRow key={link.id}>
+                        <TableCell>
+                          <div className="font-medium">{link.inviteLabel || "Unlabeled invite"}</div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <div>{link.guestDisplayName || "Unclaimed"}</div>
+                            {link.guestEmail ? <div className="text-xs text-muted-foreground">{link.guestEmail}</div> : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={statusVariant}>{statusLabel}</Badge>
+                        </TableCell>
+                        <TableCell>{formatDate(link.lastAccessedAt ?? link.startedAt)}</TableCell>
+                        <TableCell>{formatDate(link.submittedAt)}</TableCell>
+                        <TableCell>{formatDate(link.expiresAt)}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+                No guest links were used for this assessment.
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : null}

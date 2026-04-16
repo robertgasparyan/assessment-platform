@@ -180,9 +180,10 @@ npm run db:seed
 ## Export and Import
 
 Detailed OS-specific instructions live in:
-- [INSTALLATION_WINDOWS.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_WINDOWS.md)
 - [INSTALLATION_LINUX.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_LINUX.md)
 - [INSTALLATION_MACOS.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION_MACOS.md)
+- Shared index:
+  - [INSTALLATION.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/INSTALLATION.md)
 - Dedicated backup/restore guide:
   - [BACKUP_AND_RESTORE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/BACKUP_AND_RESTORE.md)
 

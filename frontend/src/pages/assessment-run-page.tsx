@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { MonitorPlay, Sparkles, TimerReset } from "lucide-react";
+import { Copy, ExternalLink, MonitorPlay, Sparkles, TimerReset } from "lucide-react";
 import { toast } from "sonner";
 import { AssessmentMatrix } from "@/components/assessment-matrix";
 import { AssessmentPresentationMode } from "@/components/assessment-presentation-mode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/features/auth-context";
 import { api } from "@/lib/api";
-import type { AssessmentRunDetail, UserSummary } from "@/types";
+import type { AssessmentRunDetail, GuestAssessmentLink, GuestParticipationSettings, UserSummary } from "@/types";
 
 type ResponseState = Record<string, { selectedValue: number; selectedLabel: string; comment?: string }>;
 
@@ -33,6 +34,31 @@ function formatDate(value: string | null | undefined) {
     day: "numeric",
     year: "numeric"
   }).format(new Date(value));
+}
+
+function buildAbsoluteGuestUrl(guestUrl: string) {
+  if (/^https?:\/\//i.test(guestUrl)) {
+    return guestUrl;
+  }
+
+  return new URL(guestUrl, window.location.origin).toString();
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
 }
 
 function getDueDateState(dueDate: string | null | undefined, status: AssessmentRunDetail["status"] | undefined) {
@@ -71,6 +97,30 @@ export function AssessmentRunPage() {
     queryKey: ["assignable-users"],
     queryFn: () => api.get<UserSummary[]>("/users/assignable")
   });
+  const guestLinksQuery = useQuery({
+    queryKey: ["assessment-run-guest-links", runId],
+    queryFn: () => api.get<GuestAssessmentLink[]>(`/assessment-runs/${runId}/guest-links`),
+    enabled: Boolean(
+      runId
+      && user
+      && runQuery.data
+      && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || runQuery.data.ownerUser?.id === user.id)
+      && runQuery.data.status !== "SUBMITTED"
+      && runQuery.data.status !== "ARCHIVED"
+    )
+  });
+  const guestParticipationSettingsQuery = useQuery({
+    queryKey: ["assessment-run-guest-settings", runId],
+    queryFn: () => api.get<GuestParticipationSettings>(`/assessment-runs/${runId}/guest-participation-settings`),
+    enabled: Boolean(
+      runId
+      && user
+      && runQuery.data
+      && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || runQuery.data.ownerUser?.id === user.id)
+      && runQuery.data.status !== "SUBMITTED"
+      && runQuery.data.status !== "ARCHIVED"
+    )
+  });
 
   const [responses, setResponses] = useState<ResponseState>({});
   const [submissionSummary, setSubmissionSummary] = useState("");
@@ -81,6 +131,11 @@ export function AssessmentRunPage() {
   const [editOwnerUserId, setEditOwnerUserId] = useState("");
   const [editDueDate, setEditDueDate] = useState("");
   const [editPeriodLabel, setEditPeriodLabel] = useState("");
+  const [guestExpiryDays, setGuestExpiryDays] = useState("7");
+  const [guestInviteLabel, setGuestInviteLabel] = useState("");
+  const [guestParticipationEnabled, setGuestParticipationEnabled] = useState(false);
+  const [guestResultsVisible, setGuestResultsVisible] = useState(false);
+  const [isGuestParticipationOpen, setIsGuestParticipationOpen] = useState(false);
   const [isPresentationModeOpen, setIsPresentationModeOpen] = useState(false);
   const [presentationQuestionIndex, setPresentationQuestionIndex] = useState(0);
 
@@ -164,6 +219,60 @@ export function AssessmentRunPage() {
     },
     onError: (error: Error) => toast.error(error.message)
   });
+  const createGuestLinkMutation = useMutation({
+    mutationFn: () =>
+      api.post<GuestAssessmentLink>(`/assessment-runs/${runId}/guest-links`, {
+        inviteLabel: guestInviteLabel.trim() || undefined,
+        expiresInDays: guestExpiryDays === "none" ? undefined : Number(guestExpiryDays)
+      }),
+    onSuccess: async (created) => {
+      await queryClient.invalidateQueries({ queryKey: ["assessment-run-guest-links", runId] });
+      setGuestInviteLabel("");
+      await copyTextToClipboard(buildAbsoluteGuestUrl(created.guestUrl));
+      toast.success("Guest link created and copied");
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const revokeGuestLinkMutation = useMutation({
+    mutationFn: (guestLinkId: string) => api.post<GuestAssessmentLink>(`/assessment-runs/${runId}/guest-links/${guestLinkId}/revoke`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["assessment-run-guest-links", runId] });
+      toast.success("Guest link revoked");
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const updateGuestParticipationSettingsMutation = useMutation({
+    mutationFn: (nextVisible: boolean) =>
+      api.put<GuestParticipationSettings>(`/assessment-runs/${runId}/guest-participation-settings`, {
+        guestParticipationEnabled,
+        guestResultsVisible: nextVisible
+      }),
+    onSuccess: async (data) => {
+      setGuestParticipationEnabled(data.guestParticipationEnabled);
+      setGuestResultsVisible(data.guestResultsVisible);
+      await queryClient.invalidateQueries({ queryKey: ["assessment-run-guest-settings", runId] });
+      toast.success("Guest results visibility updated");
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const updateGuestParticipationEnabledMutation = useMutation({
+    mutationFn: (nextEnabled: boolean) =>
+      api.put<GuestParticipationSettings>(`/assessment-runs/${runId}/guest-participation-settings`, {
+        guestParticipationEnabled: nextEnabled,
+        guestResultsVisible
+      }),
+    onSuccess: async (data) => {
+      setGuestParticipationEnabled(data.guestParticipationEnabled);
+      setGuestResultsVisible(data.guestResultsVisible);
+      if (!data.guestParticipationEnabled) {
+        setIsGuestParticipationOpen(false);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["assessment-run-guest-settings", runId] });
+      await queryClient.invalidateQueries({ queryKey: ["assessment-run-guest-links", runId] });
+      toast.success(`Guest participation ${data.guestParticipationEnabled ? "enabled" : "disabled"}`);
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
 
   const run = runQuery.data;
   const isSubmitted = run?.status === "SUBMITTED";
@@ -200,6 +309,19 @@ export function AssessmentRunPage() {
     && run
     && (user.role === "ADMIN" || user.role === "TEAM_LEAD" || user.role === "TEAM_MEMBER" || run.ownerUser?.id === user.id)
   );
+  const guestLinks = guestLinksQuery.data ?? [];
+  const activeGuestLinks = guestLinks.filter((link) => !link.isRevoked && !link.submittedAt && !(link.expiresAt && new Date(link.expiresAt) < new Date()));
+  const submittedGuestLinks = guestLinks.filter((link) => Boolean(link.submittedAt));
+  const inactiveGuestLinks = guestLinks.filter((link) => link.isRevoked || (!link.submittedAt && Boolean(link.expiresAt && new Date(link.expiresAt) < new Date())));
+
+  useEffect(() => {
+    if (typeof guestParticipationSettingsQuery.data?.guestParticipationEnabled === "boolean") {
+      setGuestParticipationEnabled(guestParticipationSettingsQuery.data.guestParticipationEnabled);
+    }
+    if (typeof guestParticipationSettingsQuery.data?.guestResultsVisible === "boolean") {
+      setGuestResultsVisible(guestParticipationSettingsQuery.data.guestResultsVisible);
+    }
+  }, [guestParticipationSettingsQuery.data?.guestParticipationEnabled, guestParticipationSettingsQuery.data?.guestResultsVisible]);
 
   useEffect(() => {
     if (!hasHydrated || isSubmitted || !canEditResponses || !hasUnsavedChanges) {
@@ -222,6 +344,88 @@ export function AssessmentRunPage() {
         : autosaveStatus === "error"
           ? "Autosave failed"
           : "Draft changes are local until you answer";
+
+  function renderGuestLinkList(links: GuestAssessmentLink[], emptyMessage: string) {
+    if (!links.length) {
+      return (
+        <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
+          {emptyMessage}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {links.map((link) => {
+          const isExpired = Boolean(link.expiresAt && new Date(link.expiresAt) < new Date());
+          const isUsable = !link.isRevoked && !isExpired && !link.submittedAt;
+
+          return (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border bg-white px-3 py-3" key={link.id}>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-sm font-medium leading-5">
+                    {link.inviteLabel || link.guestDisplayName || "Unlabeled guest link"}
+                  </div>
+                  {link.guestDisplayName || link.guestEmail ? (
+                    <div className="text-xs text-muted-foreground">
+                      {link.guestDisplayName || "Guest participant"}
+                      {link.guestEmail ? ` · ${link.guestEmail}` : ""}
+                    </div>
+                  ) : null}
+                  <div className="truncate text-xs text-muted-foreground" title={buildAbsoluteGuestUrl(link.guestUrl)}>
+                    {buildAbsoluteGuestUrl(link.guestUrl)}
+                  </div>
+                <div className="text-xs text-muted-foreground">
+                  Created {formatDate(link.createdAt)} · {link.expiresAt ? `Expires ${formatDate(link.expiresAt)}` : "No expiry"}
+                  {link.lastAccessedAt ? ` · Last opened ${formatDate(link.lastAccessedAt)}` : ""}
+                  {link.submittedAt ? ` · Submitted ${formatDate(link.submittedAt)}` : ""}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={link.isRevoked ? "secondary" : link.submittedAt ? "success" : isExpired ? "secondary" : "outline"}>
+                  {link.isRevoked ? "Revoked" : link.submittedAt ? "Submitted" : isExpired ? "Expired" : "Active"}
+                </Badge>
+                {isUsable ? (
+                  <>
+                    <Button
+                      className="h-8 w-8 p-0"
+                      onClick={() => window.open(buildAbsoluteGuestUrl(link.guestUrl), "_blank", "noopener,noreferrer")}
+                      type="button"
+                      variant="outline"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      className="h-8 w-8 p-0"
+                      onClick={async () => {
+                        await copyTextToClipboard(buildAbsoluteGuestUrl(link.guestUrl));
+                        toast.success("Guest link copied");
+                      }}
+                      type="button"
+                      variant="outline"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                ) : null}
+                {!link.isRevoked && !link.submittedAt ? (
+                  <Button
+                    className="h-8 px-2.5 text-xs"
+                    disabled={revokeGuestLinkMutation.isPending}
+                    onClick={() => revokeGuestLinkMutation.mutate(link.id)}
+                    type="button"
+                    variant="outline"
+                  >
+                    Revoke
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -303,6 +507,176 @@ export function AssessmentRunPage() {
           ) : null}
         </CardContent>
       </Card>
+      ) : null}
+
+      {canManageRun && !isSubmitted && run?.status !== "ARCHIVED" ? (
+        <Card>
+          <CardContent>
+            <div className="flex flex-wrap items-center justify-between gap-4 py-1">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-semibold text-foreground">Guest participation</div>
+                  <Badge variant={guestParticipationEnabled ? "default" : "secondary"}>
+                    {guestParticipationEnabled ? "Enabled" : "Off"}
+                  </Badge>
+                  {guestParticipationEnabled ? <Badge variant="outline">{activeGuestLinks.length} active</Badge> : null}
+                  {guestParticipationEnabled ? <Badge variant="success">{submittedGuestLinks.length} submitted</Badge> : null}
+                  {guestParticipationEnabled && inactiveGuestLinks.length ? (
+                    <Badge variant="secondary">{inactiveGuestLinks.length} inactive</Badge>
+                  ) : null}
+                  {guestParticipationEnabled && guestResultsVisible ? <Badge variant="outline">Guest results visible</Badge> : null}
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Use this when the run needs outside participants without platform accounts.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <input
+                    checked={guestParticipationEnabled}
+                    disabled={updateGuestParticipationEnabledMutation.isPending}
+                    onChange={(event) => {
+                      const nextEnabled = event.target.checked;
+                      setGuestParticipationEnabled(nextEnabled);
+                      if (!nextEnabled) {
+                        setGuestResultsVisible(false);
+                      }
+                      updateGuestParticipationEnabledMutation.mutate(nextEnabled);
+                    }}
+                    type="checkbox"
+                  />
+                  Enable guest participation
+                </label>
+                <Button
+                  disabled={!guestParticipationEnabled}
+                  onClick={() => setIsGuestParticipationOpen(true)}
+                  type="button"
+                  variant="outline"
+                >
+                  Manage links
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {isGuestParticipationOpen && guestParticipationEnabled ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-5xl rounded-[1.5rem] border border-primary/20 bg-white p-6 shadow-2xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold text-foreground">Guest participation</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Create guest links, control guest results visibility, and review active or completed external participation.
+                </div>
+              </div>
+              <Button onClick={() => setIsGuestParticipationOpen(false)} type="button" variant="outline">
+                Close
+              </Button>
+            </div>
+
+            <div className="mt-6 space-y-5">
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr),minmax(0,0.85fr)]">
+                <div className="rounded-[1rem] border bg-[linear-gradient(135deg,_rgba(238,248,232,0.9),_rgba(255,255,255,0.98))] px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Overview</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge variant="outline">{activeGuestLinks.length} active</Badge>
+                    <Badge variant="success">{submittedGuestLinks.length} submitted</Badge>
+                    <Badge variant="secondary">{inactiveGuestLinks.length} inactive</Badge>
+                    <Badge variant={guestResultsVisible ? "outline" : "secondary"}>
+                      {guestResultsVisible ? "Results visible" : "Results hidden"}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="rounded-[1rem] border bg-muted/20 px-4 py-4">
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">Create guest link</div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        Generate a shareable link for an external participant.
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),auto,auto] md:items-end">
+                      <div className="space-y-2">
+                        <Label>Invite label</Label>
+                        <Input
+                          onChange={(event) => setGuestInviteLabel(event.target.value)}
+                          placeholder="Vendor workshop"
+                          value={guestInviteLabel}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Link expiry</Label>
+                        <Select
+                          options={[
+                            { value: "7", label: "7 days" },
+                            { value: "14", label: "14 days" },
+                            { value: "30", label: "30 days" },
+                            { value: "none", label: "No expiry" }
+                          ]}
+                          value={guestExpiryDays}
+                          onChange={(event) => setGuestExpiryDays(event.target.value)}
+                        />
+                      </div>
+                      <Button disabled={createGuestLinkMutation.isPending} onClick={() => createGuestLinkMutation.mutate()} type="button">
+                        {createGuestLinkMutation.isPending ? "Creating..." : "Create guest link"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[1rem] border bg-muted/20 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">Allow guests to view submitted results</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      If enabled, guests who submit through their link can open a guest-safe results page after submission.
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-3 text-sm text-muted-foreground">
+                    <input
+                      checked={guestResultsVisible}
+                      disabled={updateGuestParticipationSettingsMutation.isPending}
+                      onChange={(event) => {
+                        const nextVisible = event.target.checked;
+                        setGuestResultsVisible(nextVisible);
+                        updateGuestParticipationSettingsMutation.mutate(nextVisible);
+                      }}
+                      type="checkbox"
+                    />
+                    Guest results visible
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-3">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-foreground">Active guest links</div>
+                    <Badge variant="outline">{activeGuestLinks.length}</Badge>
+                  </div>
+                  {renderGuestLinkList(activeGuestLinks, "No active guest links.")}
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-foreground">Submitted guest sessions</div>
+                    <Badge variant="success">{submittedGuestLinks.length}</Badge>
+                  </div>
+                  {renderGuestLinkList(submittedGuestLinks, "No submitted guest sessions yet.")}
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-foreground">Inactive links</div>
+                    <Badge variant="secondary">{inactiveGuestLinks.length}</Badge>
+                  </div>
+                  {renderGuestLinkList(inactiveGuestLinks, "No expired or revoked links.")}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {run?.assignmentHistory.length ? (

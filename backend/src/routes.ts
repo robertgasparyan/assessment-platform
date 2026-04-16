@@ -81,6 +81,7 @@ const quarterAssessmentRunSchema = z.object({
   ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
+  guestParticipationEnabled: z.boolean().optional(),
   allowDuplicate: z.boolean().optional(),
   periodType: z.literal("QUARTER"),
   periodLabel: z.string().optional(),
@@ -96,6 +97,7 @@ const customRangeAssessmentRunSchema = z.object({
   ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
+  guestParticipationEnabled: z.boolean().optional(),
   allowDuplicate: z.boolean().optional(),
   periodType: z.literal("CUSTOM_RANGE"),
   periodLabel: z.string().optional(),
@@ -111,6 +113,7 @@ const pointInTimeAssessmentRunSchema = z.object({
   ownerUserId: z.string().min(1).optional(),
   ownerName: z.string().trim().min(1).optional(),
   dueDate: z.string().datetime().optional(),
+  guestParticipationEnabled: z.boolean().optional(),
   allowDuplicate: z.boolean().optional(),
   periodType: z.literal("POINT_IN_TIME"),
   periodLabel: z.string().optional(),
@@ -198,6 +201,34 @@ const inviteUserSchema = z.object({
 
 const reportShareSchema = z.object({
   expiresInDays: z.number().int().min(1).max(90).optional()
+});
+
+const guestAssessmentLinkSchema = z.object({
+  inviteLabel: z.string().trim().min(1).max(120).optional().or(z.literal("")),
+  expiresInDays: z.number().int().min(1).max(30).optional()
+});
+
+const guestAssessmentIdentitySchema = z.object({
+  guestDisplayName: z.string().trim().min(1).max(120),
+  guestEmail: z.string().trim().email().optional().or(z.literal(""))
+});
+
+const guestAssessmentResponsesSchema = guestAssessmentIdentitySchema.extend({
+  responses: z.array(
+    z.object({
+      questionId: z.string().min(1),
+      selectedValue: z.number().int().positive(),
+      selectedLabel: z.string().min(1),
+      comment: z.string().nullable().optional()
+    })
+  )
+});
+
+const guestAssessmentSubmitSchema = guestAssessmentIdentitySchema;
+
+const guestParticipationSettingsSchema = z.object({
+  guestParticipationEnabled: z.boolean(),
+  guestResultsVisible: z.boolean()
 });
 
 const resultsAiQuestionSchema = z.object({
@@ -546,6 +577,7 @@ function serializeAssessmentRunSummary(run: {
   ownerUserId: string | null;
   ownerName: string | null;
   dueDate: Date | null;
+  guestParticipationEnabled: boolean;
   periodType: AssessmentPeriodType;
   periodLabel: string;
   periodBucket: string;
@@ -578,6 +610,7 @@ function serializeAssessmentRunSummary(run: {
       : null,
     ownerName: run.ownerName,
     dueDate: run.dueDate,
+    guestParticipationEnabled: run.guestParticipationEnabled,
     periodType: run.periodType,
     periodLabel: run.periodLabel,
     periodBucket: run.periodBucket,
@@ -751,6 +784,35 @@ async function canManageAssessmentRun(user: SessionUser, runId: string) {
   return false;
 }
 
+async function canViewGuestParticipation(user: SessionUser, runId: string) {
+  if (user.role === UserRole.ADMIN) {
+    return true;
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      teamId: true,
+      ownerUserId: true
+    }
+  });
+
+  if (!run) {
+    return false;
+  }
+
+  if (run.ownerUserId === user.id) {
+    return true;
+  }
+
+  if (user.role === UserRole.TEAM_LEAD) {
+    const teamIds = await getUserTeamIds(user.id);
+    return teamIds.includes(run.teamId);
+  }
+
+  return false;
+}
+
 async function canEditAssessmentResponses(user: SessionUser, runId: string) {
   if (user.role === UserRole.ADMIN) {
     return true;
@@ -806,8 +868,188 @@ function createShareToken() {
   return createSessionToken();
 }
 
+function startOfTodayUtc() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function getDuePriority(dueDate: Date | null) {
+  if (!dueDate) {
+    return { rank: 3, label: "none" as const };
+  }
+
+  const today = startOfTodayUtc();
+  const diffDays = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    return { rank: 0, label: "overdue" as const };
+  }
+
+  if (diffDays <= 3) {
+    return { rank: 1, label: "due_soon" as const };
+  }
+
+  return { rank: 2, label: "scheduled" as const };
+}
+
 function buildShareUrl(token: string) {
   return `${config.clientUrl.replace(/\/$/, "")}/shared-results/${token}`;
+}
+
+function buildGuestAssessmentUrl(token: string) {
+  return `${config.clientUrl.replace(/\/$/, "")}/guest-assessments/${token}`;
+}
+
+function serializeGuestAssessmentLink(link: {
+  id: string;
+  token: string;
+  inviteLabel: string | null;
+  guestDisplayName: string | null;
+  guestEmail: string | null;
+  isRevoked: boolean;
+  expiresAt: Date | null;
+  startedAt: Date | null;
+  lastAccessedAt: Date | null;
+  submittedAt: Date | null;
+  createdAt: Date;
+}) {
+  return {
+    id: link.id,
+    token: link.token,
+    inviteLabel: link.inviteLabel,
+    guestDisplayName: link.guestDisplayName,
+    guestEmail: link.guestEmail,
+    isRevoked: link.isRevoked,
+    expiresAt: link.expiresAt,
+    startedAt: link.startedAt,
+    lastAccessedAt: link.lastAccessedAt,
+    submittedAt: link.submittedAt,
+    createdAt: link.createdAt,
+    guestUrl: `/guest-assessments/${link.token}`
+  };
+}
+
+async function getActiveGuestAssessmentLink(token: string) {
+  return prisma.guestAssessmentLink.findFirst({
+    where: {
+      token,
+      isRevoked: false,
+      assessmentRun: {
+        guestParticipationEnabled: true,
+        status: {
+          in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS]
+        }
+      },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          ownerUser: true,
+          assignmentHistory: {
+            include: {
+              assignedByUser: true,
+              fromUser: true,
+              toUser: true
+            },
+            orderBy: {
+              createdAt: "desc"
+            }
+          },
+          templateVersion: {
+            include: {
+              domains: {
+                include: {
+                  questions: {
+                    include: {
+                      levels: true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: true
+        }
+      }
+    }
+  });
+}
+
+async function saveAssessmentRunResponses({
+  runId,
+  responses,
+  actorUserId,
+  summary,
+  metadata
+}: {
+  runId: string;
+  responses: Array<{
+    questionId: string;
+    selectedValue: number;
+    selectedLabel: string;
+    comment?: string | null;
+  }>;
+  actorUserId?: string | null;
+  summary: string;
+  metadata?: unknown;
+}) {
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId }
+  });
+
+  if (!run) {
+    return null;
+  }
+
+  await prisma.$transaction(
+    responses.map((item) =>
+      prisma.assessmentResponse.upsert({
+        where: {
+          assessmentRunId_questionId: {
+            assessmentRunId: runId,
+            questionId: item.questionId
+          }
+        },
+        update: {
+          selectedValue: item.selectedValue,
+          selectedLabel: item.selectedLabel,
+          comment: item.comment ?? null
+        },
+        create: {
+          assessmentRunId: runId,
+          questionId: item.questionId,
+          selectedValue: item.selectedValue,
+          selectedLabel: item.selectedLabel,
+          comment: item.comment ?? null
+        }
+      })
+    )
+  );
+
+  await prisma.assessmentRun.update({
+    where: { id: runId },
+    data: {
+      status:
+        run.status === AssessmentRunStatus.DRAFT && responses.length > 0
+          ? AssessmentRunStatus.IN_PROGRESS
+          : run.status
+    }
+  });
+
+  await logAudit({
+    actorUserId,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: actorUserId ? "assessment_run.responses_saved" : "assessment_run.guest_responses_saved",
+    summary,
+    metadata
+  });
+
+  return run;
 }
 
 function serializeReportEmailDeliverySettings(
@@ -1270,6 +1512,198 @@ router.get("/shared-results/:token", async (request, response) => {
       token: shareLink.token,
       expiresAt: shareLink.expiresAt,
       createdAt: shareLink.createdAt
+    }
+  });
+});
+
+router.get("/guest-assessments/:token", async (request, response) => {
+  const link = await getActiveGuestAssessmentLink(String(request.params.token));
+
+  if (!link) {
+    return response.status(404).json({ message: "Guest assessment link is invalid or expired" });
+  }
+
+  await prisma.guestAssessmentLink.update({
+    where: { id: link.id },
+    data: {
+      lastAccessedAt: new Date(),
+      startedAt: link.startedAt ?? new Date()
+    }
+  });
+
+  response.json({
+    ...serializeAssessmentRun(link.assessmentRun),
+    guestAccess: {
+      token: link.token,
+      expiresAt: link.expiresAt,
+      createdAt: link.createdAt,
+      inviteLabel: link.inviteLabel,
+      guestDisplayName: link.guestDisplayName,
+      guestEmail: link.guestEmail,
+      submittedAt: link.submittedAt,
+      resultsVisible: link.assessmentRun.guestResultsVisible
+    }
+  });
+});
+
+router.put("/guest-assessments/:token/responses", async (request, response) => {
+  const input = guestAssessmentResponsesSchema.parse(request.body);
+  const link = await getActiveGuestAssessmentLink(String(request.params.token));
+
+  if (!link) {
+    return response.status(404).json({ message: "Guest assessment link is invalid or expired" });
+  }
+
+  if (link.assessmentRun.status === AssessmentRunStatus.SUBMITTED || link.assessmentRun.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment is no longer accepting guest responses" });
+  }
+
+  const normalizedName = input.guestDisplayName.trim();
+  const normalizedEmail = input.guestEmail?.trim() || null;
+
+  await prisma.guestAssessmentLink.update({
+    where: { id: link.id },
+    data: {
+      guestDisplayName: normalizedName,
+      guestEmail: normalizedEmail,
+      lastAccessedAt: new Date(),
+      startedAt: link.startedAt ?? new Date()
+    }
+  });
+
+  const run = await saveAssessmentRunResponses({
+    runId: link.assessmentRunId,
+    responses: input.responses,
+    actorUserId: null,
+    summary: `${normalizedName} saved guest responses for ${link.assessmentRun.title}`,
+    metadata: {
+      guestAssessmentLinkId: link.id,
+      guestDisplayName: normalizedName,
+      guestEmail: normalizedEmail,
+      responseCount: input.responses.length
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  response.json({ ok: true });
+});
+
+router.post("/guest-assessments/:token/submit", async (request, response) => {
+  const input = guestAssessmentSubmitSchema.parse(request.body ?? {});
+  const link = await getActiveGuestAssessmentLink(String(request.params.token));
+
+  if (!link) {
+    return response.status(404).json({ message: "Guest assessment link is invalid or expired" });
+  }
+
+  const normalizedName = input.guestDisplayName.trim();
+  const normalizedEmail = input.guestEmail?.trim() || null;
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: link.assessmentRunId },
+    include: {
+      responses: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment can no longer be submitted from a guest link" });
+  }
+
+  const overallScore = run.responses.length
+    ? Number((run.responses.reduce((sum, item) => sum + item.selectedValue, 0) / run.responses.length).toFixed(2))
+    : null;
+
+  const [updated] = await prisma.$transaction([
+    prisma.assessmentRun.update({
+      where: { id: run.id },
+      data: {
+        status: AssessmentRunStatus.SUBMITTED,
+        submittedAt: new Date(),
+        overallScore
+      }
+    }),
+    prisma.guestAssessmentLink.update({
+      where: { id: link.id },
+      data: {
+        guestDisplayName: normalizedName,
+        guestEmail: normalizedEmail,
+        submittedAt: new Date(),
+        lastAccessedAt: new Date(),
+        startedAt: link.startedAt ?? new Date()
+      }
+    })
+  ]);
+
+  await logAudit({
+    actorUserId: null,
+    assessmentRunId: run.id,
+    entityType: "assessment_run",
+    entityId: run.id,
+    action: "assessment_run.guest_submitted",
+    summary: `${normalizedName} submitted guest assessment ${updated.title}`,
+    metadata: {
+      guestAssessmentLinkId: link.id,
+      guestDisplayName: normalizedName,
+      guestEmail: normalizedEmail
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.get("/guest-assessments/:token/results", async (request, response) => {
+  const link = await prisma.guestAssessmentLink.findFirst({
+    where: {
+      token: String(request.params.token),
+      isRevoked: false,
+      submittedAt: {
+        not: null
+      },
+      assessmentRun: {
+        is: {
+          guestParticipationEnabled: true,
+          status: AssessmentRunStatus.SUBMITTED,
+          guestResultsVisible: true
+        }
+      },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
+    },
+    include: {
+      assessmentRun: {
+        select: {
+          id: true
+        }
+      }
+    }
+  });
+
+  if (!link) {
+    return response.status(404).json({ message: "Guest results are unavailable for this link" });
+  }
+
+  const payload = await buildAssessmentResultsPayload(link.assessmentRun.id);
+  if (!payload) {
+    return response.status(404).json({ message: "Assessment results not found" });
+  }
+
+  response.json({
+    ...payload,
+    guestAccess: {
+      token: link.token,
+      expiresAt: link.expiresAt,
+      createdAt: link.createdAt,
+      inviteLabel: link.inviteLabel,
+      guestDisplayName: link.guestDisplayName,
+      guestEmail: link.guestEmail,
+      submittedAt: link.submittedAt,
+      resultsVisible: true
     }
   });
 });
@@ -2461,6 +2895,7 @@ router.post("/assessment-runs", async (request, response) => {
         ownerUserId: input.ownerUserId ?? null,
         ownerName,
         dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        guestParticipationEnabled: Boolean(input.guestParticipationEnabled),
         ...period
       }
     });
@@ -2960,6 +3395,180 @@ router.get("/assessment-runs/:id/share-links", async (request, response) => {
       createdByUser: link.createdByUser
     }))
   );
+});
+
+router.get("/assessment-runs/:id/guest-links", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canViewGuestParticipation(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to guest links for this assessment" });
+  }
+
+  const links = await prisma.guestAssessmentLink.findMany({
+    where: {
+      assessmentRunId: runId
+    },
+    orderBy: {
+      createdAt: "desc"
+    }
+  });
+
+  response.json(links.map(serializeGuestAssessmentLink));
+});
+
+router.get("/assessment-runs/:id/guest-participation-settings", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to guest participation settings for this assessment" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      guestParticipationEnabled: true,
+      guestResultsVisible: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  response.json({
+    guestParticipationEnabled: run.guestParticipationEnabled,
+    guestResultsVisible: run.guestResultsVisible
+  });
+});
+
+router.put("/assessment-runs/:id/guest-participation-settings", async (request, response) => {
+  const input = guestParticipationSettingsSchema.parse(request.body ?? {});
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to update guest participation settings for this assessment" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  const updated = await prisma.assessmentRun.update({
+    where: { id: runId },
+    data: {
+      guestParticipationEnabled: input.guestParticipationEnabled,
+      guestResultsVisible: input.guestResultsVisible
+    },
+    select: {
+      guestParticipationEnabled: true,
+      guestResultsVisible: true,
+      title: true
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.guest_settings_updated",
+    summary: `${request.adminUser!.displayName} updated guest participation settings for ${updated.title}`,
+    metadata: {
+      guestParticipationEnabled: updated.guestParticipationEnabled,
+      guestResultsVisible: updated.guestResultsVisible
+    }
+  });
+
+  response.json({
+    guestParticipationEnabled: updated.guestParticipationEnabled,
+    guestResultsVisible: updated.guestResultsVisible
+  });
+});
+
+router.post("/assessment-runs/:id/guest-links", async (request, response) => {
+  const input = guestAssessmentLinkSchema.parse(request.body ?? {});
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to create guest links for this assessment" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (!run.guestParticipationEnabled) {
+    return response.status(400).json({ message: "Enable guest participation for this assessment before creating guest links" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "Guest links can only be created for active assessments" });
+  }
+
+  const created = await prisma.guestAssessmentLink.create({
+    data: {
+      assessmentRunId: runId,
+      createdByUserId: request.adminUser!.id,
+      inviteLabel: input.inviteLabel?.trim() || null,
+      token: createShareToken(),
+      expiresAt: input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "guest_assessment_link",
+    entityId: created.id,
+    action: "assessment_run.guest_link_created",
+    summary: `${request.adminUser!.displayName} created a guest assessment link for ${run.title}`,
+    metadata: {
+      inviteLabel: created.inviteLabel,
+      expiresAt: created.expiresAt
+    }
+  });
+
+  response.status(201).json(serializeGuestAssessmentLink(created));
+});
+
+router.post("/assessment-runs/:id/guest-links/:guestLinkId/revoke", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to revoke guest links for this assessment" });
+  }
+
+  const link = await prisma.guestAssessmentLink.findFirst({
+    where: {
+      id: String(request.params.guestLinkId),
+      assessmentRunId: runId
+    }
+  });
+
+  if (!link) {
+    return response.status(404).json({ message: "Guest link not found" });
+  }
+
+  const revoked = await prisma.guestAssessmentLink.update({
+    where: { id: link.id },
+    data: {
+      isRevoked: true
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "guest_assessment_link",
+    entityId: revoked.id,
+    action: "assessment_run.guest_link_revoked",
+    summary: `${request.adminUser!.displayName} revoked a guest assessment link`
+  });
+
+  response.json(serializeGuestAssessmentLink(revoked));
 });
 
 router.post("/assessment-runs/:id/share-links", async (request, response) => {
@@ -3523,6 +4132,19 @@ router.get("/dashboard/summary", async (request, response) => {
       updatedAt: "desc"
     }
   });
+  const activeWorkRuns = await prisma.assessmentRun.findMany({
+    where: {
+      ...(assessmentWhere ?? {}),
+      status: {
+        in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS]
+      }
+    },
+    include: {
+      team: true,
+      templateVersion: true
+    },
+    orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }]
+  });
 
   const latestSubmittedPerTeamSource = await prisma.assessmentRun.findMany({
     where: {
@@ -3546,6 +4168,7 @@ router.get("/dashboard/summary", async (request, response) => {
       periodLabel: string;
       submittedAt: Date | null;
       overallScore: number | null;
+      guestParticipationEnabled: boolean;
     }
   >();
 
@@ -3561,9 +4184,31 @@ router.get("/dashboard/summary", async (request, response) => {
       templateName: run.templateVersion.name,
       periodLabel: run.periodLabel,
       submittedAt: run.submittedAt,
-      overallScore: run.overallScore
+      overallScore: run.overallScore,
+      guestParticipationEnabled: run.guestParticipationEnabled
     });
   }
+
+  const prioritizedActiveWork = [...activeWorkRuns].sort((a, b) => {
+    const dueA = getDuePriority(a.dueDate);
+    const dueB = getDuePriority(b.dueDate);
+    if (dueA.rank !== dueB.rank) {
+      return dueA.rank - dueB.rank;
+    }
+
+    const dueDateA = a.dueDate ? a.dueDate.getTime() : Number.MAX_SAFE_INTEGER;
+    const dueDateB = b.dueDate ? b.dueDate.getTime() : Number.MAX_SAFE_INTEGER;
+    if (dueDateA !== dueDateB) {
+      return dueDateA - dueDateB;
+    }
+
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+  const assignedWorkRuns = prioritizedActiveWork.filter((item) => item.ownerUserId === user.id);
+  const teamQueueRuns = prioritizedActiveWork.filter((item) => item.ownerUserId !== user.id);
+  const overdueCount = prioritizedActiveWork.filter((item) => getDuePriority(item.dueDate).label === "overdue").length;
+  const dueSoonCount = prioritizedActiveWork.filter((item) => getDuePriority(item.dueDate).label === "due_soon").length;
+  const guestEnabledCount = prioritizedActiveWork.filter((item) => item.guestParticipationEnabled).length;
 
   response.json({
     currentUser: {
@@ -3584,29 +4229,46 @@ router.get("/dashboard/summary", async (request, response) => {
       status: item.status,
       teamName: item.team.name,
       templateName: item.templateVersion.name,
-      updatedAt: item.updatedAt
+      updatedAt: item.updatedAt,
+      guestParticipationEnabled: item.guestParticipationEnabled
     })),
     latestSubmittedByTeam: Array.from(latestSubmittedPerTeam.values()),
     myWork: {
-      assignedRuns: latestRuns
-        .filter((item) => item.ownerUserId === user.id && item.status !== AssessmentRunStatus.SUBMITTED && item.status !== AssessmentRunStatus.ARCHIVED)
+      assignedCount: assignedWorkRuns.length,
+      teamCount: teamQueueRuns.length,
+      overdueCount,
+      dueSoonCount,
+      guestEnabledCount,
+      focusRuns: prioritizedActiveWork
         .slice(0, 5)
         .map((item) => ({
           id: item.id,
           title: item.title,
           teamName: item.team.name,
           dueDate: item.dueDate,
-          status: item.status
+          status: item.status,
+          guestParticipationEnabled: item.guestParticipationEnabled,
+          ownership: item.ownerUserId === user.id ? "assigned" : "team"
         })),
-      teamRuns: latestRuns
-        .filter((item) => item.ownerUserId !== user.id)
-        .slice(0, 5)
+      assignedRuns: assignedWorkRuns
+        .slice(0, 3)
         .map((item) => ({
           id: item.id,
           title: item.title,
           teamName: item.team.name,
           dueDate: item.dueDate,
-          status: item.status
+          status: item.status,
+          guestParticipationEnabled: item.guestParticipationEnabled
+        })),
+      teamRuns: teamQueueRuns
+        .slice(0, 3)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          teamName: item.team.name,
+          dueDate: item.dueDate,
+          status: item.status,
+          guestParticipationEnabled: item.guestParticipationEnabled
         }))
     }
   });
