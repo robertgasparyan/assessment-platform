@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -134,6 +135,7 @@ function exportPublishedTemplateCsv(detail: TemplateDetail) {
 }
 
 export function TemplatesPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
@@ -608,6 +610,13 @@ export function TemplatesPage() {
                       </button>
                       <button
                         className="font-medium text-muted-foreground"
+                        onClick={() => navigate(`/templates/${template.id}/document`)}
+                        type="button"
+                      >
+                        Read / PDF
+                      </button>
+                      <button
+                        className="font-medium text-muted-foreground"
                         disabled={template.usage.totalRuns > 0}
                         onClick={() => setPendingTemplateDeleteId(template.id)}
                         type="button"
@@ -641,6 +650,13 @@ export function TemplatesPage() {
                           type="button"
                         >
                           Export full template (.csv)
+                        </button>
+                        <button
+                          className="rounded-full border border-border/80 bg-white px-3 py-1 text-xs font-semibold text-muted-foreground transition hover:bg-muted/40"
+                          onClick={() => navigate(`/templates/${templateDetailQuery.data.id}/document`)}
+                          type="button"
+                        >
+                          Open reader / PDF
                         </button>
                       </div>
                     </div>

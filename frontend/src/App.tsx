@@ -21,6 +21,9 @@ const AssessmentRunPage = lazy(() =>
   import("@/pages/assessment-run-page").then((module) => ({ default: module.AssessmentRunPage }))
 );
 const ResultsPage = lazy(() => import("@/pages/results-page").then((module) => ({ default: module.ResultsPage })));
+const TemplateDocumentPage = lazy(() =>
+  import("@/pages/template-document-page").then((module) => ({ default: module.TemplateDocumentPage }))
+);
 
 function RouteFallback() {
   return (
@@ -93,6 +96,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
+          <Route path="/templates/:templateId/document" element={<TemplateDocumentPage />} />
           <Route path="/libraries" element={<LibrariesPage />} />
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/administration" element={<AdministrationPage />} />
