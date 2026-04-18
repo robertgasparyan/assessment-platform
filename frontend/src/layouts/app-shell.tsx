@@ -5,12 +5,14 @@ import { LayoutDashboard, ClipboardList, FileStack, Radar, LibraryBig, Users, Li
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/features/auth-context";
 import { Button } from "@/components/ui/button";
+import { AiAssistantPanel } from "@/components/ai-assistant-panel";
 import { CommandPalette } from "@/components/command-palette";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useApplicationBranding } from "@/hooks/use-application-branding";
+import { useAiAssistantSettings } from "@/hooks/use-ai-assistant-settings";
 import { useNavigationSearchSettings } from "@/hooks/use-navigation-search-settings";
 import type { AiStatus, NotificationsResponse, UserRole } from "@/types";
 
@@ -28,6 +30,7 @@ const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard;
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout, changePassword } = useAuth();
   const { applicationTitle } = useApplicationBranding();
+  const aiAssistantSettingsQuery = useAiAssistantSettings();
   const navigationSearchQuery = useNavigationSearchSettings();
   const queryClient = useQueryClient();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
@@ -133,6 +136,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="min-w-0 flex-1">
           <div className="mb-4 flex justify-end">
             <div className="flex items-center gap-3">
+              <AiAssistantPanel
+                available={aiAssistantSettingsQuery.data?.available ?? false}
+                enabled={aiAssistantSettingsQuery.data?.enabled ?? false}
+              />
               <CommandPalette enabled={navigationSearchQuery.data?.enabled ?? true} />
               <div className="relative">
                 <button

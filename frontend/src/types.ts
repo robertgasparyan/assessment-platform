@@ -140,6 +140,38 @@ export type NavigationSearchSettings = {
   enabled: boolean;
 };
 
+export type AiAssistantSettings = {
+  enabled: boolean;
+  available: boolean;
+};
+
+export type AiAssistantAction = {
+  id: string;
+  label: string;
+  to: string;
+};
+
+export type AiAssistantItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  badge?: string;
+  to: string;
+};
+
+export type AiAssistantResponse = {
+  message: string;
+  followUp: string;
+  providerLabel: string | null;
+  actions: AiAssistantAction[];
+  items: AiAssistantItem[];
+};
+
+export type AiAssistantHistoryTurn = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export type AiProvider = "ollama" | "openai" | "claude" | "gemini";
 
 export type AiProviderSettingsSummary = {

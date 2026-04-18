@@ -6,6 +6,7 @@ const REPORT_EMAIL_DELIVERY_KEY = "report_email_delivery";
 const SMTP_CONFIGURATION_KEY = "smtp_configuration";
 const APPLICATION_BRANDING_KEY = "application_branding";
 const NAVIGATION_SEARCH_KEY = "navigation_search";
+const AI_ASSISTANT_KEY = "ai_assistant";
 const DEFAULT_APPLICATION_TITLE = "Assessment Platform";
 
 type ReportEmailDeliverySettingValue = {
@@ -23,6 +24,10 @@ type ApplicationBrandingSettingValue = {
 };
 
 type NavigationSearchSettingValue = {
+  enabled?: boolean;
+};
+
+type AiAssistantSettingValue = {
   enabled?: boolean;
 };
 
@@ -76,6 +81,19 @@ function readNavigationSearch(value: unknown) {
   };
 }
 
+function readAiAssistant(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return {
+      enabled: false
+    };
+  }
+
+  const typed = value as AiAssistantSettingValue;
+  return {
+    enabled: typed.enabled === true
+  };
+}
+
 export async function getApplicationBrandingSettings() {
   const setting = await prisma.platformSetting.findUnique({
     where: { key: APPLICATION_BRANDING_KEY }
@@ -96,6 +114,17 @@ export async function getNavigationSearchSettings() {
 
   return {
     enabled: navigationSearch.enabled
+  };
+}
+
+export async function getAiAssistantSettings() {
+  const setting = await prisma.platformSetting.findUnique({
+    where: { key: AI_ASSISTANT_KEY }
+  });
+  const assistant = readAiAssistant(setting?.value);
+
+  return {
+    enabled: assistant.enabled
   };
 }
 
@@ -238,4 +267,23 @@ export async function updateNavigationSearchSettings(enabled: boolean) {
   });
 
   return getNavigationSearchSettings();
+}
+
+export async function updateAiAssistantSettings(enabled: boolean) {
+  const value = {
+    enabled
+  } satisfies AiAssistantSettingValue;
+
+  await prisma.platformSetting.upsert({
+    where: { key: AI_ASSISTANT_KEY },
+    create: {
+      key: AI_ASSISTANT_KEY,
+      value: value as Prisma.InputJsonValue
+    },
+    update: {
+      value: value as Prisma.InputJsonValue
+    }
+  });
+
+  return getAiAssistantSettings();
 }

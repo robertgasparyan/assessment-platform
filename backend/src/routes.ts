@@ -30,14 +30,17 @@ import {
   type PostgresDumpFormat
 } from "./lib/admin-export.js";
 import {
+  getAiAssistantSettings,
   getApplicationBrandingSettings,
   getNavigationSearchSettings,
   getReportEmailDeliverySettings,
+  updateAiAssistantSettings,
   updateSmtpConfiguration,
   updateApplicationBrandingSettings,
   updateNavigationSearchSettings,
   updateReportEmailDeliverySettings
 } from "./lib/platform-settings.js";
+import { buildDeterministicAssistantResponse, generateAiAssistantResponse } from "./lib/ai-assistant.js";
 import {
   getAiSettingsSummary,
   getAiStatusForUser,
@@ -267,6 +270,10 @@ const navigationSearchSchema = z.object({
   enabled: z.boolean()
 });
 
+const aiAssistantSettingsSchema = z.object({
+  enabled: z.boolean()
+});
+
 const aiProviderSchema = z.enum(["ollama", "openai", "claude", "gemini"]);
 
 const aiProviderConfigSchema = z.object({
@@ -292,6 +299,20 @@ const aiSettingsSchema = z.object({
 const aiProviderTestSchema = z.object({
   provider: aiProviderSchema,
   config: aiProviderConfigSchema
+});
+
+const aiAssistantRequestSchema = z.object({
+  message: z.string().trim().min(1).max(500),
+  currentPath: z.string().trim().max(200).optional(),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().trim().min(1).max(800)
+      })
+    )
+    .max(8)
+    .optional()
 });
 
 const reportsAiBriefSchema = z.object({
@@ -735,6 +756,109 @@ async function getUserTeamIds(userId: string) {
   return memberships.map((membership) => membership.teamId);
 }
 
+async function buildAccessibleRunWhere(user: SessionUser): Promise<Prisma.AssessmentRunWhereInput> {
+  if (user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER) {
+    return {};
+  }
+
+  const teamIds = await getUserTeamIds(user.id);
+  const visibility = {
+    OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
+  } satisfies Prisma.AssessmentRunWhereInput;
+
+  if (user.role === UserRole.VIEWER) {
+    return {
+      AND: [visibility, { status: AssessmentRunStatus.SUBMITTED }]
+    };
+  }
+
+  return visibility;
+}
+
+async function getAssistantActionOptions(user: SessionUser) {
+  const actions = [
+    {
+      id: "dashboard",
+      label: "Open Dashboard",
+      description: "Go to the operational home page",
+      to: "/",
+      roles: [UserRole.ADMIN, UserRole.TEMPLATE_MANAGER, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "assessments-create",
+      label: "Create assessment",
+      description: "Open Assessments on the Create tab",
+      to: "/assessments?tab=create",
+      roles: [UserRole.ADMIN, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "assessments-active",
+      label: "Open active assessments",
+      description: "Review draft and in-progress runs",
+      to: "/assessments?tab=active",
+      roles: [UserRole.ADMIN, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "assessments-submitted",
+      label: "Open submitted assessments",
+      description: "Review completed runs",
+      to: "/assessments?tab=submitted",
+      roles: [UserRole.ADMIN, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "my-assessments",
+      label: "Open My Assessments",
+      description: "Go to your personal assessment workspace",
+      to: "/my-assessments",
+      roles: [UserRole.ADMIN, UserRole.TEMPLATE_MANAGER, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "templates",
+      label: "Open Templates",
+      description: "Go to template authoring and versions",
+      to: "/templates",
+      roles: [UserRole.ADMIN, UserRole.TEMPLATE_MANAGER]
+    },
+    {
+      id: "reports",
+      label: "Open Reports",
+      description: "Go to current-state reporting across teams",
+      to: "/reports",
+      roles: [UserRole.ADMIN, UserRole.TEMPLATE_MANAGER, UserRole.TEAM_LEAD, UserRole.TEAM_MEMBER, UserRole.VIEWER]
+    },
+    {
+      id: "administration",
+      label: "Open Administration",
+      description: "Go to administrator settings",
+      to: "/administration",
+      roles: [UserRole.ADMIN]
+    },
+    {
+      id: "users",
+      label: "Open Users",
+      description: "Go to user management",
+      to: "/administration?tab=users",
+      roles: [UserRole.ADMIN]
+    },
+    {
+      id: "teams",
+      label: "Open Teams",
+      description: "Go to team administration",
+      to: "/teams",
+      roles: [UserRole.ADMIN]
+    },
+    {
+      id: "audit-trail",
+      label: "Open Audit Trail",
+      description: "Go to governance and audit history",
+      to: "/administration?tab=audit",
+      roles: [UserRole.ADMIN]
+    }
+  ];
+
+  return actions.filter((action) => action.roles.includes(user.role)).map(({ roles: _roles, ...action }) => action);
+}
+
 async function canAccessAssessmentRun(user: SessionUser, runId: string) {
   if (user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER) {
     return true;
@@ -903,6 +1027,17 @@ function getDuePriority(dueDate: Date | null) {
   }
 
   return { rank: 2, label: "scheduled" as const };
+}
+
+function getDueBadgeLabel(dueDate: Date | null) {
+  const priority = getDuePriority(dueDate);
+  if (priority.label === "overdue") {
+    return "Overdue";
+  }
+  if (priority.label === "due_soon") {
+    return "Due soon";
+  }
+  return null;
 }
 
 function buildShareUrl(token: string) {
@@ -1839,6 +1974,16 @@ router.get("/settings/navigation-search", async (_request, response) => {
   response.json(await getNavigationSearchSettings());
 });
 
+router.get("/settings/ai-assistant", async (_request, response) => {
+  const settings = await getAiAssistantSettings();
+  const aiStatus = await getAiStatusForUser();
+
+  response.json({
+    enabled: settings.enabled,
+    available: settings.enabled && aiStatus.enabled
+  });
+});
+
 router.get("/settings/ai-status", async (_request, response) => {
   response.json(await getAiStatusForUser());
 });
@@ -1925,6 +2070,28 @@ router.put("/settings/navigation-search", requireRole(UserRole.ADMIN), async (re
   response.json(settings);
 });
 
+router.put("/settings/ai-assistant", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = aiAssistantSettingsSchema.parse(request.body ?? {});
+  const settings = await updateAiAssistantSettings(input.enabled);
+  const aiStatus = await getAiStatusForUser();
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "platform_setting",
+    entityId: "ai_assistant",
+    action: "platform_setting.ai_assistant_updated",
+    summary: `${request.adminUser!.displayName} ${settings.enabled ? "enabled" : "disabled"} the AI assistant`,
+    metadata: {
+      enabled: settings.enabled
+    }
+  });
+
+  response.json({
+    enabled: settings.enabled,
+    available: settings.enabled && aiStatus.enabled
+  });
+});
+
 router.put("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (request, response) => {
   const input = aiSettingsSchema.parse(request.body ?? {});
   const settings = await updateAiSettings(input);
@@ -1951,6 +2118,216 @@ router.put("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (req
 router.post("/settings/ai-configuration/test", requireRole(UserRole.ADMIN), async (request, response) => {
   const input = aiProviderTestSchema.parse(request.body ?? {});
   response.json(await testAiProviderConnection(input));
+});
+
+router.post("/assistant/respond", async (request, response) => {
+  if (!request.adminUser) {
+    return response.status(401).json({ message: "Authentication required" });
+  }
+
+  const settings = await getAiAssistantSettings();
+  if (!settings.enabled) {
+    return response.status(403).json({ message: "AI assistant is disabled by the administrator" });
+  }
+
+  const input = aiAssistantRequestSchema.parse(request.body ?? {});
+  const user = request.adminUser;
+  const [runVisibility, actionOptions] = await Promise.all([
+    buildAccessibleRunWhere(user),
+    getAssistantActionOptions(user)
+  ]);
+
+  const [activeRuns, recentSubmissions, templates, userCount, teamCount] = await Promise.all([
+    prisma.assessmentRun.findMany({
+      where: {
+        AND: [runVisibility, { status: { in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS] } }]
+      },
+      select: {
+        id: true,
+        title: true,
+        periodLabel: true,
+        dueDate: true,
+        status: true,
+        team: {
+          select: {
+            name: true
+          }
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      take: 8
+    }),
+    prisma.assessmentRun.findMany({
+      where: {
+        AND: [runVisibility, { status: AssessmentRunStatus.SUBMITTED }]
+      },
+      select: {
+        id: true,
+        title: true,
+        periodLabel: true,
+        overallScore: true,
+        submittedAt: true,
+        team: {
+          select: {
+            name: true
+          }
+        },
+        templateVersion: {
+          select: {
+            name: true
+          }
+        }
+      },
+      orderBy: [{ submittedAt: "desc" }, { periodSortDate: "desc" }, { createdAt: "desc" }],
+      take: 8
+    }),
+    templateManagerRoles.has(user.role)
+      ? prisma.assessmentTemplate.findMany({
+          include: {
+            versions: {
+              orderBy: { versionNumber: "desc" },
+              take: 1
+            }
+          },
+          orderBy: {
+            updatedAt: "desc"
+          },
+          take: 8
+        })
+      : Promise.resolve([]),
+    user.role === UserRole.ADMIN ? prisma.user.count() : Promise.resolve(null),
+    user.role === UserRole.ADMIN ? prisma.team.count() : Promise.resolve(null)
+  ]);
+
+  const latestSubmittedByTeam = new Map<string, (typeof recentSubmissions)[number]>();
+  for (const run of recentSubmissions) {
+    if (!latestSubmittedByTeam.has(run.team.name)) {
+      latestSubmittedByTeam.set(run.team.name, run);
+    }
+  }
+
+  const scoredRecentSubmissions = recentSubmissions.filter(
+    (run): run is (typeof recentSubmissions)[number] & { overallScore: number } => typeof run.overallScore === "number"
+  );
+  const overdueActiveRuns = activeRuns.filter((run) => getDuePriority(run.dueDate).label === "overdue");
+  const dueSoonActiveRuns = activeRuns.filter((run) => getDuePriority(run.dueDate).label === "due_soon");
+  const averageSubmittedScore = scoredRecentSubmissions.length
+    ? Number(
+        (
+          scoredRecentSubmissions.reduce((sum, run) => sum + run.overallScore, 0) /
+          scoredRecentSubmissions.length
+        ).toFixed(2)
+      )
+    : null;
+
+  const itemOptions = [
+    ...activeRuns.map((run) => ({
+      id: `active:${run.id}`,
+      title: run.title,
+      subtitle: `${run.team.name} · ${run.periodLabel}`,
+      badge: getDueBadgeLabel(run.dueDate) || (run.status === AssessmentRunStatus.DRAFT ? "Draft" : "In progress"),
+      to: `/assessments/${run.id}`
+    })),
+    ...recentSubmissions.map((run) => ({
+      id: `submitted:${run.id}`,
+      title: run.title,
+      subtitle: `${run.team.name} · ${run.templateVersion.name} · ${run.periodLabel}`,
+      badge: typeof run.overallScore === "number" ? `Score ${run.overallScore.toFixed(2)}` : "Submitted",
+      to: `/assessments/${run.id}/results`
+    })),
+    ...templates.map((template) => ({
+      id: `template:${template.id}`,
+      title: template.name,
+      subtitle: template.category?.trim() ? template.category : "Template",
+      badge: template.versions[0] ? `v${template.versions[0].versionNumber}` : "Template",
+      to: "/templates"
+    }))
+  ];
+
+  const assistantContext = {
+    currentPath: input.currentPath?.trim() || "/",
+    user: {
+      displayName: user.displayName,
+      role: user.role
+    },
+    summary: {
+      activeAssessments: activeRuns.length,
+      overdueAssessments: overdueActiveRuns.length,
+      dueSoonAssessments: dueSoonActiveRuns.length,
+      recentSubmissions: recentSubmissions.length,
+      templates: templates.length,
+      reportsTeamCoverage: latestSubmittedByTeam.size,
+      averageSubmittedScore,
+      usersManaged: userCount,
+      teamsManaged: teamCount
+    },
+    actions: actionOptions.map(({ id, label, description }) => ({
+      id,
+      label,
+      description
+    })),
+    items: itemOptions.map(({ id, title, subtitle, badge }) => ({
+      id,
+      title,
+      subtitle,
+      badge
+    })),
+    conversationHistory: input.history ?? []
+  };
+
+  const deterministicReply = buildDeterministicAssistantResponse({
+    message: input.message,
+    context: assistantContext
+  });
+
+  const assistantReply =
+    deterministicReply ??
+    (await generateAiAssistantResponse({
+      message: input.message,
+      context: assistantContext
+    }));
+
+  const actionMap = new Map(actionOptions.map((action) => [action.id, action]));
+  const itemMap = new Map(itemOptions.map((item) => [item.id, item]));
+
+  response.json({
+    message: assistantReply.message,
+    followUp: assistantReply.followUp,
+    providerLabel: "providerLabel" in assistantReply ? assistantReply.providerLabel : null,
+    actions: (assistantReply.actionIds ?? [])
+      .map((id) => actionMap.get(id))
+      .filter((action): action is NonNullable<typeof action> => Boolean(action))
+      .map((action) => ({
+        id: action.id,
+        label: action.label,
+        to: action.to
+      })),
+    items: (assistantReply.itemIds ?? [])
+      .map((id) => itemMap.get(id))
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        badge: item.badge,
+        to: item.to
+      }))
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    entityType: "assistant",
+    entityId: "ai_assistant",
+    action: deterministicReply ? "assistant.query_deterministic_answered" : "assistant.query_ai_answered",
+    summary: `${user.displayName} asked the AI assistant a platform question`,
+    metadata: {
+      currentPath: assistantContext.currentPath,
+      message: input.message,
+      usedDeterministicRouting: Boolean(deterministicReply),
+      matchedActionIds: assistantReply.actionIds ?? [],
+      matchedItemIds: assistantReply.itemIds ?? []
+    }
+  });
 });
 
 router.post("/auth/logout", async (request, response) => {

@@ -5,6 +5,7 @@ import { CardContent, CardDescription, CardHeader, CardTitle } from "@/component
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/features/auth-context";
 import { ApplicationBrandingSection } from "@/components/application-branding-section";
+import { AiAssistantSection } from "@/components/ai-assistant-section";
 import { NavigationSearchSection } from "@/components/navigation-search-section";
 import { UsersManagementSection } from "@/components/users-management-section";
 import { AiConfigurationSection } from "@/components/ai-configuration-section";
@@ -93,6 +94,7 @@ export function AdministrationPage() {
         <TabsContent className="space-y-6" value="configurations">
           <ApplicationBrandingSection />
           <NavigationSearchSection />
+          <AiAssistantSection />
           <AiConfigurationSection />
           <EmailConfigurationSection />
         </TabsContent>
