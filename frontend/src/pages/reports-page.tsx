@@ -63,6 +63,7 @@ function badgeTone(score: number | null | undefined) {
 export function ReportsPage() {
   const [viewMode, setViewMode] = useState<"team" | "team-template">("team-template");
   const [search, setSearch] = useState("");
+  const [teamGroupFilter, setTeamGroupFilter] = useState("all");
   const [teamFilter, setTeamFilter] = useState("all");
   const [templateFilter, setTemplateFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -91,6 +92,19 @@ export function ReportsPage() {
       Array.from(new Set(activeRows.map((item) => item.teamName)))
         .sort((a, b) => a.localeCompare(b))
         .map((teamName) => ({ value: teamName, label: teamName })),
+    [activeRows]
+  );
+
+  const teamGroupOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          activeRows
+            .filter((item) => item.teamGroupId && item.teamGroupName)
+            .map((item) => [item.teamGroupId!, { value: item.teamGroupId!, label: item.teamGroupName! }])
+        ).values()
+      )
+        .sort((a, b) => a.label.localeCompare(b.label)),
     [activeRows]
   );
 
@@ -160,6 +174,10 @@ export function ReportsPage() {
             domain.title.toLowerCase().includes(query)
             || domain.questions.some((question) => question.prompt.toLowerCase().includes(query))
         );
+      const matchesTeamGroup =
+        teamGroupFilter === "all"
+        || (teamGroupFilter === "none" && !item.teamGroupId)
+        || item.teamGroupId === teamGroupFilter;
       const matchesTeam = teamFilter === "all" || item.teamName === teamFilter;
       const matchesTemplate = templateFilter === "all" || item.templateName === templateFilter;
       const matchesCategory = categoryFilter === "all" || item.templateCategory === categoryFilter;
@@ -168,9 +186,9 @@ export function ReportsPage() {
         questionFilter === "all"
         || item.domains.some((domain) => domain.questions.some((question) => question.prompt === questionFilter));
 
-      return matchesSearch && matchesTeam && matchesTemplate && matchesCategory && matchesDomain && matchesQuestion;
+      return matchesSearch && matchesTeamGroup && matchesTeam && matchesTemplate && matchesCategory && matchesDomain && matchesQuestion;
     });
-  }, [activeRows, categoryFilter, domainFilter, questionFilter, search, teamFilter, templateFilter]);
+  }, [activeRows, categoryFilter, domainFilter, questionFilter, search, teamFilter, teamGroupFilter, templateFilter]);
 
   const filteredSummary = useMemo(() => {
     const scoredRuns = filteredLatestRows.filter((item) => typeof item.overallScore === "number");
@@ -273,6 +291,9 @@ export function ReportsPage() {
   const aiEnabledForReports = Boolean(aiStatusQuery.data?.enabled);
   const activeFilterChips = [
     search ? { key: "search", label: `Search: ${search}` } : null,
+    teamGroupFilter !== "all"
+      ? { key: "teamGroup", label: `Group: ${teamGroupFilter === "none" ? "Ungrouped" : teamGroupOptions.find((option) => option.value === teamGroupFilter)?.label ?? teamGroupFilter}` }
+      : null,
     teamFilter !== "all" ? { key: "team", label: `Team: ${teamFilter}` } : null,
     templateFilter !== "all" ? { key: "template", label: `Template: ${templateFilter}` } : null,
     categoryFilter !== "all" ? { key: "category", label: `Category: ${categoryFilter}` } : null,
@@ -657,13 +678,21 @@ export function ReportsPage() {
           <CardDescription>Search across teams, templates, domains, and questions without turning the page into a heavy reporting console.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
             <div className="space-y-2 xl:col-span-2">
               <Label>Search</Label>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input className="pl-9" placeholder="Team, template, period, domain, or question" value={search} onChange={(event) => setSearch(event.target.value)} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Group</Label>
+              <Select
+                options={[{ value: "all", label: "All groups" }, { value: "none", label: "Ungrouped" }, ...teamGroupOptions]}
+                value={teamGroupFilter}
+                onChange={(event) => setTeamGroupFilter(event.target.value)}
+              />
             </div>
             <div className="space-y-2">
               <Label>Team</Label>
@@ -697,6 +726,7 @@ export function ReportsPage() {
                 className="inline-flex h-10 items-center justify-center rounded-xl border px-4 text-sm font-medium transition hover:bg-muted"
                 onClick={() => {
                   setSearch("");
+                  setTeamGroupFilter("all");
                   setTeamFilter("all");
                   setTemplateFilter("all");
                   setCategoryFilter("all");
@@ -927,7 +957,12 @@ export function ReportsPage() {
                         {expandedRunIds.includes(item.assessmentRunId) ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                       </Button>
                     </TableCell>
-                    <TableCell className="font-medium">{item.teamName}</TableCell>
+                    <TableCell>
+                      <div className="space-y-1">
+                        <div className="font-medium">{item.teamName}</div>
+                        {item.teamGroupName ? <Badge variant="outline">{item.teamGroupName}</Badge> : null}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="font-medium">{item.title}</div>
                       <div className="text-xs text-muted-foreground">{item.templateCategory ?? "Uncategorized template"}</div>

@@ -78,6 +78,7 @@ The database currently stores these main entity groups:
 - `User`
 - `UserTeamMembership`
 - `Category`
+- `TeamGroup`
 - `Team`
 - `TemplateDraft`
 - `QuestionLibraryItem`
@@ -131,6 +132,13 @@ Assessment runs currently use:
   - password `admin`
 - The app UI no longer shows those default credentials on the login page; they are documented here and in the user/setup docs only.
 
+### Teams and groups
+
+- `TeamGroup` stores optional team categorization such as department, region, function, or program.
+- `Team.groupId` links a team to a group when grouping is useful.
+- Ungrouped teams remain valid.
+- `UserTeamMembership` stores team membership and lead/member assignment for users.
+
 ### Assessment ownership
 
 - `AssessmentRun.ownerUserId` stores the real assigned owner user when a run is explicitly assigned.
@@ -140,7 +148,7 @@ Assessment runs currently use:
 ### Shared reports and governance
 
 - `ReportShareLink` stores tokenized read-only access for submitted results.
-- `AuditLog` stores key governance events for users, runs, and report sharing.
+- `AuditLog` stores key governance events for users, runs, report sharing, teams, team groups, and team memberships.
 - `Notification` stores user-level in-app alerts such as assignment and submission events.
 
 ### AI configuration and cache

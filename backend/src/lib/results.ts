@@ -7,7 +7,11 @@ function roundDelta(value: number | null) {
 }
 
 const assessmentRunResultsInclude = Prisma.validator<Prisma.AssessmentRunInclude>()({
-  team: true,
+  team: {
+    include: {
+      group: true
+    }
+  },
   ownerUser: true,
   templateVersion: {
     include: {
@@ -85,7 +89,11 @@ export async function buildAssessmentResultsPayload(runId: string, compareToRunI
       periodBucket: run.periodBucket
     },
     include: {
-      team: true
+      team: {
+        include: {
+          group: true
+        }
+      }
     }
   });
 

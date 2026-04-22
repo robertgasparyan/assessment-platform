@@ -10,6 +10,8 @@ const DashboardPage = lazy(() => import("@/pages/dashboard-page").then((module) 
 const TemplatesPage = lazy(() => import("@/pages/templates-page").then((module) => ({ default: module.TemplatesPage })));
 const LibrariesPage = lazy(() => import("@/pages/libraries-page").then((module) => ({ default: module.LibrariesPage })));
 const TeamsPage = lazy(() => import("@/pages/teams-page").then((module) => ({ default: module.TeamsPage })));
+const TeamDetailPage = lazy(() => import("@/pages/team-detail-page").then((module) => ({ default: module.TeamDetailPage })));
+const TeamGroupDetailPage = lazy(() => import("@/pages/team-group-detail-page").then((module) => ({ default: module.TeamGroupDetailPage })));
 const AdministrationPage = lazy(() => import("@/pages/administration-page").then((module) => ({ default: module.AdministrationPage })));
 const AssessmentsPage = lazy(() => import("@/pages/assessments-page").then((module) => ({ default: module.AssessmentsPage })));
 const MyAssessmentsPage = lazy(() => import("@/pages/my-assessments-page").then((module) => ({ default: module.MyAssessmentsPage })));
@@ -99,6 +101,8 @@ export default function App() {
           <Route path="/templates/:templateId/document" element={<TemplateDocumentPage />} />
           <Route path="/libraries" element={<LibrariesPage />} />
           <Route path="/teams" element={<TeamsPage />} />
+          <Route path="/teams/:teamId" element={<TeamDetailPage />} />
+          <Route path="/team-groups/:groupId" element={<TeamGroupDetailPage />} />
           <Route path="/administration" element={<AdministrationPage />} />
           <Route path="/users" element={<Navigate replace to="/administration?tab=users" />} />
           <Route path="/audit-trail" element={<Navigate replace to="/administration?tab=audit" />} />

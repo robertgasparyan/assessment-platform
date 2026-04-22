@@ -169,7 +169,19 @@ const categorySchema = z.object({
 
 const teamSchema = z.object({
   name: z.string().min(1),
-  description: z.string().optional()
+  description: z.string().optional(),
+  groupId: z.string().min(1).optional().nullable()
+});
+
+const teamGroupSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  sortOrder: z.number().int().optional()
+});
+
+const teamMemberSchema = z.object({
+  userId: z.string().min(1),
+  membershipRole: z.nativeEnum(TeamMembershipRole)
 });
 
 const userMembershipSchema = z.object({
@@ -623,6 +635,11 @@ function serializeAssessmentRunSummary(run: {
     id: string;
     name: string;
     description: string | null;
+    group?: {
+      id: string;
+      name: string;
+      description: string | null;
+    } | null;
     createdAt?: Date;
     updatedAt?: Date;
   };
@@ -655,7 +672,14 @@ function serializeAssessmentRunSummary(run: {
     team: {
       id: run.team.id,
       name: run.team.name,
-      description: run.team.description ?? undefined
+      description: run.team.description ?? undefined,
+      group: run.team.group
+        ? {
+            id: run.team.group.id,
+            name: run.team.group.name,
+            description: run.team.group.description
+          }
+        : null
     },
     templateVersion: {
       id: run.templateVersionId ?? run.templateVersion.id ?? "",
@@ -735,7 +759,11 @@ async function findDuplicateRuns(input: z.infer<typeof assessmentRunSchema>) {
       }
     },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       templateVersion: true
     },
     orderBy: [{ updatedAt: "desc" }]
@@ -992,6 +1020,49 @@ async function canCreateAssessmentForTeam(user: SessionUser, teamId: string) {
   return teamIds.includes(teamId);
 }
 
+async function canAccessTeam(user: SessionUser, teamId: string) {
+  if (user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER) {
+    return true;
+  }
+
+  const teamIds = await getUserTeamIds(user.id);
+  return teamIds.includes(teamId);
+}
+
+function serializeTeam(team: {
+  id: string;
+  name: string;
+  description: string | null;
+  group?: {
+    id: string;
+    name: string;
+    description: string | null;
+  } | null;
+  _count?: {
+    memberships?: number;
+    assessmentRuns?: number;
+  };
+}) {
+  return {
+    id: team.id,
+    name: team.name,
+    description: team.description,
+    group: team.group
+      ? {
+          id: team.group.id,
+          name: team.group.name,
+          description: team.group.description
+        }
+      : null,
+    counts: team._count
+      ? {
+          members: team._count.memberships ?? 0,
+          assessmentRuns: team._count.assessmentRuns ?? 0
+        }
+      : undefined
+  };
+}
+
 function roundDelta(value: number | null) {
   return typeof value === "number" ? Number(value.toFixed(2)) : null;
 }
@@ -1093,7 +1164,11 @@ async function getActiveGuestAssessmentLink(token: string) {
     include: {
       assessmentRun: {
         include: {
-          team: true,
+          team: {
+            include: {
+              group: true
+            }
+          },
           ownerUser: true,
           assignmentHistory: {
             include: {
@@ -1456,7 +1531,11 @@ async function getLatestSubmittedRunsByTeam() {
       status: AssessmentRunStatus.SUBMITTED
     },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       ownerUser: true,
       templateVersion: {
         include: {
@@ -1493,7 +1572,11 @@ async function getLatestSubmittedRunsByTeamTemplate() {
       status: AssessmentRunStatus.SUBMITTED
     },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       ownerUser: true,
       templateVersion: {
         include: {
@@ -2137,7 +2220,7 @@ router.post("/assistant/respond", async (request, response) => {
     getAssistantActionOptions(user)
   ]);
 
-  const [activeRuns, recentSubmissions, templates, userCount, teamCount] = await Promise.all([
+  const [activeRuns, recentSubmissions, templates, assistantTeams, assistantGroups, userCount, teamCount] = await Promise.all([
     prisma.assessmentRun.findMany({
       where: {
         AND: [runVisibility, { status: { in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS] } }]
@@ -2195,6 +2278,40 @@ router.post("/assistant/respond", async (request, response) => {
           take: 8
         })
       : Promise.resolve([]),
+    prisma.team.findMany({
+      where:
+        user.role === UserRole.ADMIN || user.role === UserRole.TEMPLATE_MANAGER
+          ? undefined
+          : {
+              memberships: {
+                some: {
+                  userId: user.id
+                }
+              }
+            },
+      include: {
+        group: true,
+        _count: {
+          select: {
+            memberships: true,
+            assessmentRuns: true
+          }
+        }
+      },
+      orderBy: { name: "asc" },
+      take: 8
+    }),
+    prisma.teamGroup.findMany({
+      include: {
+        _count: {
+          select: {
+            teams: true
+          }
+        }
+      },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      take: 8
+    }),
     user.role === UserRole.ADMIN ? prisma.user.count() : Promise.resolve(null),
     user.role === UserRole.ADMIN ? prisma.team.count() : Promise.resolve(null)
   ]);
@@ -2241,6 +2358,20 @@ router.post("/assistant/respond", async (request, response) => {
       subtitle: template.category?.trim() ? template.category : "Template",
       badge: template.versions[0] ? `v${template.versions[0].versionNumber}` : "Template",
       to: "/templates"
+    })),
+    ...assistantTeams.map((team) => ({
+      id: `team:${team.id}`,
+      title: team.name,
+      subtitle: team.group?.name ? `${team.group.name} · ${team._count.memberships} members` : `${team._count.memberships} members · Ungrouped`,
+      badge: `${team._count.assessmentRuns} runs`,
+      to: `/teams/${team.id}`
+    })),
+    ...assistantGroups.map((group) => ({
+      id: `group:${group.id}`,
+      title: group.name,
+      subtitle: group.description?.trim() ? group.description : "Team group",
+      badge: `${group._count.teams} teams`,
+      to: `/team-groups/${group.id}`
     }))
   ];
 
@@ -2779,9 +2910,364 @@ router.get("/teams", async (request, response) => {
               }
             }
           },
+    include: {
+      group: true,
+      _count: {
+        select: {
+          memberships: true,
+          assessmentRuns: true
+        }
+      }
+    },
     orderBy: { name: "asc" }
   });
-  response.json(teams);
+  response.json(teams.map(serializeTeam));
+});
+
+router.get("/team-groups", async (_request, response) => {
+  const groups = await prisma.teamGroup.findMany({
+    include: {
+      teams: {
+        include: {
+          _count: {
+            select: {
+              memberships: true,
+              assessmentRuns: true
+            }
+          },
+          assessmentRuns: {
+            select: {
+              status: true,
+              overallScore: true,
+              submittedAt: true
+            }
+          }
+        }
+      }
+    },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }]
+  });
+
+  response.json(
+    groups.map((group) => {
+      const runs = group.teams.flatMap((team) => team.assessmentRuns);
+      const submittedRuns = runs.filter((run) => run.status === AssessmentRunStatus.SUBMITTED);
+      const submittedScores = submittedRuns.map((run) => run.overallScore).filter((score): score is number => typeof score === "number");
+      const latestSubmittedAt = submittedRuns
+        .map((run) => run.submittedAt)
+        .filter((value): value is Date => value instanceof Date)
+        .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+
+      return {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        sortOrder: group.sortOrder,
+        teamCount: group.teams.length,
+        metrics: {
+          teamCount: group.teams.length,
+          memberCount: group.teams.reduce((sum, team) => sum + team._count.memberships, 0),
+          totalRunCount: group.teams.reduce((sum, team) => sum + team._count.assessmentRuns, 0),
+          activeRunCount: runs.filter(
+            (run) => run.status === AssessmentRunStatus.DRAFT || run.status === AssessmentRunStatus.IN_PROGRESS || run.status === AssessmentRunStatus.ARCHIVED
+          ).length,
+          submittedRunCount: submittedRuns.length,
+          averageSubmittedScore: submittedScores.length
+            ? Number((submittedScores.reduce((sum, score) => sum + score, 0) / submittedScores.length).toFixed(2))
+            : null,
+          latestSubmittedAt
+        }
+      };
+    })
+  );
+});
+
+router.post("/team-groups", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = teamGroupSchema.parse(request.body);
+  const created = await prisma.teamGroup.create({
+    data: {
+      name: input.name,
+      description: input.description,
+      sortOrder: input.sortOrder ?? 0
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team_group",
+    entityId: created.id,
+    action: "team_group.created",
+    summary: `${request.adminUser!.displayName} created team group ${created.name}`,
+    metadata: {
+      name: created.name,
+      sortOrder: created.sortOrder
+    }
+  });
+
+  response.status(201).json({
+    ...created,
+    teamCount: 0,
+    metrics: {
+      teamCount: 0,
+      memberCount: 0,
+      totalRunCount: 0,
+      activeRunCount: 0,
+      submittedRunCount: 0,
+      averageSubmittedScore: null,
+      latestSubmittedAt: null
+    }
+  });
+});
+
+router.put("/team-groups/:id", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = teamGroupSchema.parse(request.body);
+  const previous = await prisma.teamGroup.findUnique({
+    where: { id: String(request.params.id) }
+  });
+
+  const updated = await prisma.teamGroup.update({
+    where: { id: String(request.params.id) },
+    data: {
+      name: input.name,
+      description: input.description,
+      sortOrder: input.sortOrder ?? 0
+    },
+    include: {
+      _count: {
+        select: {
+          teams: true
+        }
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team_group",
+    entityId: updated.id,
+    action: "team_group.updated",
+    summary: `${request.adminUser!.displayName} updated team group ${updated.name}`,
+    metadata: {
+      before: previous
+        ? {
+            name: previous.name,
+            description: previous.description,
+            sortOrder: previous.sortOrder
+          }
+        : null,
+      after: {
+        name: updated.name,
+        description: updated.description,
+        sortOrder: updated.sortOrder
+      }
+    }
+  });
+
+  response.json({
+    id: updated.id,
+    name: updated.name,
+    description: updated.description,
+    sortOrder: updated.sortOrder,
+    teamCount: updated._count.teams
+  });
+});
+
+router.get("/team-groups/:id", async (request, response) => {
+  const group = await prisma.teamGroup.findUnique({
+    where: { id: String(request.params.id) },
+    include: {
+      teams: {
+        include: {
+          _count: {
+            select: {
+              memberships: true,
+              assessmentRuns: true
+            }
+          },
+          assessmentRuns: {
+            include: {
+              templateVersion: true
+            },
+            orderBy: [{ periodSortDate: "desc" }, { updatedAt: "desc" }]
+          }
+        },
+        orderBy: { name: "asc" }
+      }
+    }
+  });
+
+  if (!group) {
+    return response.status(404).json({ message: "Team group not found" });
+  }
+
+  response.json({
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    sortOrder: group.sortOrder,
+    teams: group.teams.map((team) => ({
+      id: team.id,
+      name: team.name,
+      description: team.description,
+      counts: {
+        members: team._count.memberships,
+        assessmentRuns: team._count.assessmentRuns
+      },
+      activeRuns: team.assessmentRuns
+        .filter((run) => run.status === AssessmentRunStatus.DRAFT || run.status === AssessmentRunStatus.IN_PROGRESS || run.status === AssessmentRunStatus.ARCHIVED)
+        .map((run) => ({
+          id: run.id,
+          title: run.title,
+          periodLabel: run.periodLabel,
+          status: run.status,
+          dueDate: run.dueDate,
+          updatedAt: run.updatedAt,
+          guestParticipationEnabled: run.guestParticipationEnabled,
+          templateVersion: {
+            id: run.templateVersion.id,
+            name: run.templateVersion.name,
+            versionNumber: run.templateVersion.versionNumber
+          }
+        })),
+      submittedRuns: team.assessmentRuns
+        .filter((run) => run.status === AssessmentRunStatus.SUBMITTED)
+        .map((run) => ({
+          id: run.id,
+          title: run.title,
+          periodLabel: run.periodLabel,
+          submittedAt: run.submittedAt,
+          overallScore: run.overallScore,
+          guestParticipationEnabled: run.guestParticipationEnabled,
+          templateVersion: {
+            id: run.templateVersion.id,
+            name: run.templateVersion.name,
+            versionNumber: run.templateVersion.versionNumber
+          }
+        }))
+    }))
+  });
+});
+
+router.delete("/team-groups/:id", requireRole(UserRole.ADMIN), async (request, response) => {
+  const group = await prisma.teamGroup.findUnique({
+    where: { id: String(request.params.id) },
+    include: {
+      _count: {
+        select: {
+          teams: true
+        }
+      }
+    }
+  });
+
+  await prisma.teamGroup.delete({
+    where: { id: String(request.params.id) }
+  });
+
+  if (group) {
+    await logAudit({
+      actorUserId: request.adminUser!.id,
+      entityType: "team_group",
+      entityId: group.id,
+      action: "team_group.deleted",
+      summary: `${request.adminUser!.displayName} removed team group ${group.name}`,
+      metadata: {
+        name: group.name,
+        affectedTeams: group._count.teams
+      }
+    });
+  }
+
+  response.status(204).send();
+});
+
+router.get("/teams/:id", async (request, response) => {
+  const user = request.adminUser!;
+  const teamId = String(request.params.id);
+
+  if (!(await canAccessTeam(user, teamId))) {
+    return response.status(403).json({ message: "You do not have access to this team" });
+  }
+
+  const team = await prisma.team.findUnique({
+    where: { id: teamId },
+    include: {
+      group: true,
+      memberships: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              username: true,
+              role: true,
+              isActive: true
+            }
+          }
+        },
+        orderBy: [{ membershipRole: "asc" }, { user: { displayName: "asc" } }]
+      },
+      assessmentRuns: {
+        include: {
+          templateVersion: true
+        },
+        orderBy: [{ periodSortDate: "desc" }, { updatedAt: "desc" }]
+      },
+      _count: {
+        select: {
+          memberships: true,
+          assessmentRuns: true
+        }
+      }
+    }
+  });
+
+  if (!team) {
+    return response.status(404).json({ message: "Team not found" });
+  }
+
+  response.json({
+    ...serializeTeam(team),
+    members: team.memberships.map((membership) => ({
+      id: membership.user.id,
+      displayName: membership.user.displayName,
+      username: membership.user.username,
+      role: membership.user.role,
+      isActive: membership.user.isActive,
+      membershipRole: membership.membershipRole
+    })),
+    activeRuns: team.assessmentRuns
+      .filter((run) => run.status === AssessmentRunStatus.DRAFT || run.status === AssessmentRunStatus.IN_PROGRESS || run.status === AssessmentRunStatus.ARCHIVED)
+      .map((run) => ({
+        id: run.id,
+        title: run.title,
+        periodLabel: run.periodLabel,
+        status: run.status,
+        dueDate: run.dueDate,
+        updatedAt: run.updatedAt,
+        guestParticipationEnabled: run.guestParticipationEnabled,
+        templateVersion: {
+          id: run.templateVersion.id,
+          name: run.templateVersion.name,
+          versionNumber: run.templateVersion.versionNumber
+        }
+      })),
+    submittedRuns: team.assessmentRuns
+      .filter((run) => run.status === AssessmentRunStatus.SUBMITTED)
+      .map((run) => ({
+        id: run.id,
+        title: run.title,
+        periodLabel: run.periodLabel,
+        submittedAt: run.submittedAt,
+        overallScore: run.overallScore,
+        guestParticipationEnabled: run.guestParticipationEnabled,
+        templateVersion: {
+          id: run.templateVersion.id,
+          name: run.templateVersion.name,
+          versionNumber: run.templateVersion.versionNumber
+        }
+      }))
+  });
 });
 
 router.post("/teams", requireRole(UserRole.ADMIN), async (request, response) => {
@@ -2789,28 +3275,225 @@ router.post("/teams", requireRole(UserRole.ADMIN), async (request, response) => 
   const created = await prisma.team.create({
     data: {
       name: input.name,
-      description: input.description
+      description: input.description,
+      groupId: input.groupId || null
+    },
+    include: {
+      group: true,
+      _count: {
+        select: {
+          memberships: true,
+          assessmentRuns: true
+        }
+      }
     }
   });
-  response.status(201).json(created);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team",
+    entityId: created.id,
+    action: "team.created",
+    summary: `${request.adminUser!.displayName} created team ${created.name}`,
+    metadata: {
+      name: created.name,
+      groupId: created.group?.id ?? null,
+      groupName: created.group?.name ?? null
+    }
+  });
+
+  response.status(201).json(serializeTeam(created));
 });
 
 router.put("/teams/:id", requireRole(UserRole.ADMIN), async (request, response) => {
   const input = teamSchema.parse(request.body);
+  const previous = await prisma.team.findUnique({
+    where: { id: String(request.params.id) },
+    include: {
+      group: true
+    }
+  });
+
   const updated = await prisma.team.update({
     where: { id: String(request.params.id) },
     data: {
       name: input.name,
-      description: input.description
+      description: input.description,
+      groupId: input.groupId || null
+    },
+    include: {
+      group: true,
+      _count: {
+        select: {
+          memberships: true,
+          assessmentRuns: true
+        }
+      }
     }
   });
-  response.json(updated);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team",
+    entityId: updated.id,
+    action: previous?.groupId !== updated.group?.id ? "team.group_assignment_updated" : "team.updated",
+    summary:
+      previous?.groupId !== updated.group?.id
+        ? `${request.adminUser!.displayName} moved team ${updated.name} to ${updated.group?.name ?? "Ungrouped"}`
+        : `${request.adminUser!.displayName} updated team ${updated.name}`,
+    metadata: {
+      before: previous
+        ? {
+            name: previous.name,
+            description: previous.description,
+            groupId: previous.group?.id ?? null,
+            groupName: previous.group?.name ?? null
+          }
+        : null,
+      after: {
+        name: updated.name,
+        description: updated.description,
+        groupId: updated.group?.id ?? null,
+        groupName: updated.group?.name ?? null
+      }
+    }
+  });
+
+  response.json(serializeTeam(updated));
 });
 
 router.delete("/teams/:id", requireRole(UserRole.ADMIN), async (request, response) => {
-  await prisma.team.delete({
-    where: { id: String(request.params.id) }
+  const teamId = String(request.params.id);
+  const team = await prisma.team.findUnique({
+    where: { id: teamId },
+    include: {
+      group: true
+    }
   });
+  const runCount = await prisma.assessmentRun.count({
+    where: { teamId }
+  });
+
+  if (runCount > 0) {
+    return response.status(400).json({ message: "Teams with assessment history cannot be deleted. Archive or retain the team to preserve reporting history." });
+  }
+
+  await prisma.team.delete({
+    where: { id: teamId }
+  });
+
+  if (team) {
+    await logAudit({
+      actorUserId: request.adminUser!.id,
+      entityType: "team",
+      entityId: team.id,
+      action: "team.deleted",
+      summary: `${request.adminUser!.displayName} removed team ${team.name}`,
+      metadata: {
+        name: team.name,
+        groupId: team.group?.id ?? null,
+        groupName: team.group?.name ?? null
+      }
+    });
+  }
+
+  response.status(204).send();
+});
+
+router.post("/teams/:id/members", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = teamMemberSchema.parse(request.body);
+  const teamId = String(request.params.id);
+  const [team, user, previousMembership] = await Promise.all([
+    prisma.team.findUnique({ where: { id: teamId } }),
+    prisma.user.findUnique({ where: { id: input.userId } }),
+    prisma.userTeamMembership.findUnique({
+      where: {
+        userId_teamId: {
+          userId: input.userId,
+          teamId
+        }
+      }
+    })
+  ]);
+
+  await prisma.userTeamMembership.upsert({
+    where: {
+      userId_teamId: {
+        userId: input.userId,
+        teamId
+      }
+    },
+    create: {
+      userId: input.userId,
+      teamId,
+      membershipRole: input.membershipRole
+    },
+    update: {
+      membershipRole: input.membershipRole
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team_membership",
+    entityId: `${teamId}:${input.userId}`,
+    action: previousMembership ? "team.membership_updated" : "team.member_added",
+    summary: previousMembership
+      ? `${request.adminUser!.displayName} updated ${user?.displayName ?? "a user"} membership on ${team?.name ?? "a team"}`
+      : `${request.adminUser!.displayName} added ${user?.displayName ?? "a user"} to ${team?.name ?? "a team"}`,
+    metadata: {
+      teamId,
+      teamName: team?.name ?? null,
+      userId: input.userId,
+      userDisplayName: user?.displayName ?? null,
+      beforeRole: previousMembership?.membershipRole ?? null,
+      afterRole: input.membershipRole
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.delete("/teams/:id/members/:userId", requireRole(UserRole.ADMIN), async (request, response) => {
+  const teamId = String(request.params.id);
+  const userId = String(request.params.userId);
+  const [team, user, membership] = await Promise.all([
+    prisma.team.findUnique({ where: { id: teamId } }),
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.userTeamMembership.findUnique({
+      where: {
+        userId_teamId: {
+          userId,
+          teamId
+        }
+      }
+    })
+  ]);
+
+  await prisma.userTeamMembership.delete({
+    where: {
+      userId_teamId: {
+        userId,
+        teamId
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "team_membership",
+    entityId: `${teamId}:${userId}`,
+    action: "team.member_removed",
+    summary: `${request.adminUser!.displayName} removed ${user?.displayName ?? "a user"} from ${team?.name ?? "a team"}`,
+    metadata: {
+      teamId,
+      teamName: team?.name ?? null,
+      userId,
+      userDisplayName: user?.displayName ?? null,
+      membershipRole: membership?.membershipRole ?? null
+    }
+  });
+
   response.status(204).send();
 });
 
@@ -3220,7 +3903,11 @@ router.get("/assessment-runs", async (request, response) => {
               OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
             },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       templateVersion: true
     },
     orderBy: {
@@ -3247,7 +3934,11 @@ router.get("/my-assessments", async (request, response) => {
               OR: [{ ownerUserId: user.id }, { teamId: { in: teamIds } }]
             },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       templateVersion: true
     },
     orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }]
@@ -3374,7 +4065,11 @@ router.get("/assessment-runs/:id", async (request, response) => {
   const run = await prisma.assessmentRun.findUnique({
     where: { id: request.params.id },
     include: {
-      team: true,
+      team: {
+        include: {
+          group: true
+        }
+      },
       ownerUser: true,
       assignmentHistory: {
         include: {
@@ -4215,6 +4910,8 @@ router.get("/reports/latest-by-team", async (request, response) => {
       title: serialized.title,
       teamId: serialized.team.id,
       teamName: serialized.team.name,
+      teamGroupId: serialized.team.group?.id ?? null,
+      teamGroupName: serialized.team.group?.name ?? null,
       templateId: run.templateId,
       templateName: serialized.templateVersion.name,
       templateCategory: serialized.templateVersion.category ?? null,

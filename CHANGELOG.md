@@ -14,12 +14,12 @@ Initial `Assessment Platform v1.0` release baseline.
 - Template authoring with drafts, versioning, reusable domains, reusable questions, and managed categories
 - Admin-controlled AI configuration with global enable/disable, provider selection, encrypted provider-secret storage, and provider connection testing
 - Libraries area for categories, domains, and questions
-- Teams management
+- Teams management with optional team groups, group metrics, team profile pages, membership management, compact/card directory views, search/filtering, and create-assessment shortcuts
 - Results experience with overview, compare, peers, print summary, chart-based drilldown, read-only share links, CSV export, and optional cached AI Brief generation for submitted runs
 - Admin-controlled SMTP-backed email sending for submitted reports from the Results page
 - Reports area for latest submitted state across teams and across `team + assessment`, plus CSV export and optional cached AI Brief generation for the current filtered reporting lens
 - Templates AI assist for question improvement, domain refinement, draft consistency review, guided AI Builder flow, and one-shot full AI draft generation into the authoring studio
-- Admin audit trail and in-app notifications
+- Admin audit trail and in-app notifications, including team, team group, and team membership audit coverage
 - Administration Data Model relationship maps with compact and visual schema orientation
 - Admin export tools for portable/full JSON export plus PostgreSQL dump download
 - PostgreSQL + Prisma persistence model

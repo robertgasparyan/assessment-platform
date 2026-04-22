@@ -109,7 +109,25 @@ Typical workflow:
 Use Teams to:
 - create teams
 - edit team details
+- create optional team groups
+- organize teams into groups
+- search and filter the team directory
+- switch between card and compact list views
+- review group-level metrics
+- open team profiles
+- manage team members from a team profile
+- create an assessment directly for a selected team
 - prepare teams for assessment runs
+
+Team groups are optional. A team can stay ungrouped until a department, region, function, or program structure is useful.
+
+Team profiles show:
+- current members
+- active assessments
+- submitted assessments
+- latest submitted score
+
+Removal actions for teams, groups, and members include confirmation guardrails. Teams with assessment history are protected from deletion to preserve reporting history.
 
 ## Templates
 
@@ -278,6 +296,7 @@ Administrators can use `Administration > Audit Trail` to review important system
 - login and logout events
 - user creation and updates
 - password resets
+- team, team group, and team membership changes
 - assessment run creation, submission, archive, restore, and deletion
 - shared report link creation, email sending, and revocation
 

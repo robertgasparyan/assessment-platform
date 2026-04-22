@@ -68,6 +68,8 @@ export function buildDeterministicAssistantResponse(input: {
   const activeItems = input.context.items.filter((item) => item.id.startsWith("active:"));
   const submittedItems = input.context.items.filter((item) => item.id.startsWith("submitted:"));
   const templateItems = input.context.items.filter((item) => item.id.startsWith("template:"));
+  const teamItems = input.context.items.filter((item) => item.id.startsWith("team:"));
+  const groupItems = input.context.items.filter((item) => item.id.startsWith("group:"));
 
   if (includesAny(normalized, ["take me to reports", "open reports", "go to reports", "reports"])) {
     return {
@@ -141,7 +143,19 @@ export function buildDeterministicAssistantResponse(input: {
         typeof input.context.summary.teamsManaged === "number"
           ? `There are ${input.context.summary.teamsManaged} team records in the administration workspace.`
           : "Open Teams to manage team records.",
-      actionIds: ["teams"]
+      actionIds: ["teams"],
+      itemIds: teamItems.slice(0, 5).map((item) => item.id)
+    };
+  }
+
+  if (includesAny(normalized, ["team groups", "groups", "group assessments", "departments"])) {
+    return {
+      message:
+        groupItems.length > 0
+          ? `I found ${groupItems.length} team group${groupItems.length === 1 ? "" : "s"} in the platform context.`
+          : "There are no team groups yet.",
+      actionIds: actionById.has("teams") ? ["teams"] : [],
+      itemIds: groupItems.slice(0, 5).map((item) => item.id)
     };
   }
 

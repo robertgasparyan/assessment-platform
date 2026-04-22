@@ -16,7 +16,11 @@ type TemplateVersionGraph = Prisma.TemplateVersionGetPayload<{
 
 type AssessmentRunBaseGraph = Prisma.AssessmentRunGetPayload<{
   include: {
-    team: true;
+    team: {
+      include: {
+        group: true;
+      };
+    };
     ownerUser: true;
     templateVersion: {
       include: {

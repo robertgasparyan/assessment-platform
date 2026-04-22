@@ -149,7 +149,12 @@ function RunTable({
                 {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
               </div>
             </TableCell>
-            <TableCell>{run.team.name}</TableCell>
+            <TableCell>
+              <div className="space-y-1">
+                <div>{run.team.name}</div>
+                {run.team.group ? <Badge variant="outline">{run.team.group.name}</Badge> : null}
+              </div>
+            </TableCell>
             <TableCell>
               {run.templateVersion.name} v{run.templateVersion.versionNumber}
             </TableCell>
@@ -216,11 +221,12 @@ export function AssessmentsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const initialTab = searchParams.get("tab");
+  const initialTeamId = searchParams.get("teamId") ?? "";
   const [pageTab, setPageTab] = useState(initialTab === "active" || initialTab === "submitted" || initialTab === "create" ? initialTab : "create");
   const [title, setTitle] = useState("");
   const [titleManuallyEdited, setTitleManuallyEdited] = useState(false);
   const [templateId, setTemplateId] = useState("");
-  const [teamId, setTeamId] = useState("");
+  const [teamId, setTeamId] = useState(initialTeamId);
   const [ownerUserId, setOwnerUserId] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [guestParticipationEnabled, setGuestParticipationEnabled] = useState(false);
@@ -233,6 +239,7 @@ export function AssessmentsPage() {
   const [referenceDate, setReferenceDate] = useState("");
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [search, setSearch] = useState("");
+  const [teamGroupFilter, setTeamGroupFilter] = useState("all");
   const [teamFilter, setTeamFilter] = useState("all");
   const [templateFilter, setTemplateFilter] = useState("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -278,7 +285,18 @@ export function AssessmentsPage() {
     [runsQuery.data]
   );
   const teamOptions = useMemo(
-    () => (teamsQuery.data ?? []).map((team) => ({ value: team.id, label: team.name })),
+    () => (teamsQuery.data ?? []).map((team) => ({ value: team.id, label: team.group ? `${team.name} (${team.group.name})` : team.name })),
+    [teamsQuery.data]
+  );
+  const teamGroupOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          (teamsQuery.data ?? [])
+            .filter((team) => team.group)
+            .map((team) => [team.group!.id, { value: team.group!.id, label: team.group!.name }])
+        ).values()
+      ).sort((a, b) => a.label.localeCompare(b.label)),
     [teamsQuery.data]
   );
   const ownerOptions = useMemo(
@@ -446,6 +464,10 @@ export function AssessmentsPage() {
         || run.periodLabel.toLowerCase().includes(query)
         || (run.ownerName ?? "").toLowerCase().includes(query);
       const matchesTeam = teamFilter === "all" || run.team.id === teamFilter;
+      const matchesTeamGroup =
+        teamGroupFilter === "all"
+        || (teamGroupFilter === "none" && !run.team.group)
+        || run.team.group?.id === teamGroupFilter;
       const matchesTemplate = templateFilter === "all" || run.templateVersion.name === templateFilter;
       const matchesOwner =
         ownerFilter === "all"
@@ -456,9 +478,9 @@ export function AssessmentsPage() {
         || (guestFilter === "guest" && run.guestParticipationEnabled)
         || (guestFilter === "internal" && !run.guestParticipationEnabled);
       const matchesPeriodType = periodTypeFilter === "all" || run.periodType === periodTypeFilter;
-      return matchesSearch && matchesTeam && matchesTemplate && matchesOwner && matchesGuest && matchesPeriodType;
+      return matchesSearch && matchesTeamGroup && matchesTeam && matchesTemplate && matchesOwner && matchesGuest && matchesPeriodType;
     });
-  }, [guestFilter, ownerFilter, periodTypeFilter, runs, search, teamFilter, templateFilter]);
+  }, [guestFilter, ownerFilter, periodTypeFilter, runs, search, teamFilter, teamGroupFilter, templateFilter]);
 
   const filteredActiveRuns = commonFilteredRuns
     .filter((run) => run.status === "DRAFT" || run.status === "IN_PROGRESS")
@@ -521,10 +543,18 @@ export function AssessmentsPage() {
   }).length;
 
   const filterBlock = (
-    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-7">
+    <div className="grid gap-3 rounded-[1.25rem] border bg-muted/20 p-4 md:grid-cols-2 xl:grid-cols-8">
       <div className="space-y-2">
         <Label>Search runs</Label>
         <Input placeholder="Title, team, template, owner, or period" value={search} onChange={(event) => setSearch(event.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label>Group</Label>
+        <Select
+          options={[{ value: "all", label: "All groups" }, { value: "none", label: "Ungrouped" }, ...teamGroupOptions]}
+          value={teamGroupFilter}
+          onChange={(event) => setTeamGroupFilter(event.target.value)}
+        />
       </div>
       <div className="space-y-2">
         <Label>Team</Label>
@@ -590,13 +620,21 @@ export function AssessmentsPage() {
 
   const submittedFilterBlock = (
     <div className="space-y-3 rounded-[1.25rem] border bg-muted/20 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
         <div className="space-y-2 xl:col-span-2">
           <Label>Search submitted runs</Label>
           <Input
             placeholder="Title, team, template, owner, or period"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>Group</Label>
+          <Select
+            options={[{ value: "all", label: "All groups" }, { value: "none", label: "Ungrouped" }, ...teamGroupOptions]}
+            value={teamGroupFilter}
+            onChange={(event) => setTeamGroupFilter(event.target.value)}
           />
         </div>
         <div className="space-y-2">
@@ -674,6 +712,7 @@ export function AssessmentsPage() {
             className="w-full"
             onClick={() => {
               setSearch("");
+              setTeamGroupFilter("all");
               setTeamFilter("all");
               setTemplateFilter("all");
               setOwnerFilter("all");
@@ -695,8 +734,14 @@ export function AssessmentsPage() {
 
   useEffect(() => {
     const tab = searchParams.get("tab");
+    const requestedTeamId = searchParams.get("teamId");
+
     if (tab === "active" || tab === "submitted" || tab === "create") {
       setPageTab(tab);
+    }
+
+    if (requestedTeamId) {
+      setTeamId(requestedTeamId);
     }
   }, [searchParams]);
 

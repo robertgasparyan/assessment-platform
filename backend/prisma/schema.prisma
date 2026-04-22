@@ -79,12 +79,24 @@ model UserTeamMembership {
   @@unique([userId, teamId])
 }
 
+model TeamGroup {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  teams       Team[]
+}
+
 model Team {
   id             String          @id @default(cuid())
   name           String          @unique
   description    String?
+  groupId        String?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+  group          TeamGroup?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
   assessmentRuns AssessmentRun[]
   memberships    UserTeamMembership[]
 }

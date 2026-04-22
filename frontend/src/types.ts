@@ -1,11 +1,85 @@
 export type Team = {
   id: string;
   name: string;
-  description?: string;
+  description?: string | null;
+  group?: TeamGroup | null;
+  counts?: {
+    members: number;
+    assessmentRuns: number;
+  };
+};
+
+export type TeamGroup = {
+  id: string;
+  name: string;
+  description?: string | null;
+  sortOrder?: number;
+  teamCount?: number;
+  metrics?: {
+    teamCount: number;
+    memberCount: number;
+    totalRunCount: number;
+    activeRunCount: number;
+    submittedRunCount: number;
+    averageSubmittedScore: number | null;
+    latestSubmittedAt: string | null;
+  };
 };
 
 export type UserRole = "ADMIN" | "TEMPLATE_MANAGER" | "TEAM_LEAD" | "TEAM_MEMBER" | "VIEWER";
 export type TeamMembershipRole = "LEAD" | "MEMBER";
+
+export type TeamDetail = Team & {
+  members: Array<{
+    id: string;
+    displayName: string;
+    username: string;
+    role: UserRole;
+    isActive: boolean;
+    membershipRole: TeamMembershipRole;
+  }>;
+  activeRuns: Array<{
+    id: string;
+    title: string;
+    periodLabel: string;
+    status: "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "ARCHIVED";
+    dueDate: string | null;
+    updatedAt: string;
+    guestParticipationEnabled: boolean;
+    templateVersion: {
+      id: string;
+      name: string;
+      versionNumber: number;
+    };
+  }>;
+  submittedRuns: Array<{
+    id: string;
+    title: string;
+    periodLabel: string;
+    submittedAt: string | null;
+    overallScore: number | null;
+    guestParticipationEnabled: boolean;
+    templateVersion: {
+      id: string;
+      name: string;
+      versionNumber: number;
+    };
+  }>;
+};
+
+export type TeamGroupDetail = TeamGroup & {
+  teams: Array<{
+    id: string;
+    name: string;
+    description?: string | null;
+    counts: {
+      members: number;
+      assessmentRuns: number;
+    };
+    activeRuns: TeamDetail["activeRuns"];
+    submittedRuns: TeamDetail["submittedRuns"];
+  }>;
+};
 
 export type UserSummary = {
   id: string;
@@ -656,6 +730,8 @@ export type LatestByTeamReport = {
   title: string;
   teamId: string;
   teamName: string;
+  teamGroupId: string | null;
+  teamGroupName: string | null;
   templateId: string;
   templateName: string;
   templateCategory: string | null;

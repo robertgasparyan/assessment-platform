@@ -114,6 +114,16 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 
 - Dedicated team management area
 - Team creation and editing
+- Optional team groups for organizing teams by department, region, function, or program
+- Team group creation, editing, and removal
+- Team directory search across team names, group names, and descriptions
+- Group filtering for the team directory
+- Card and compact table views for the team directory
+- Group summary metrics for grouped members, active runs, submitted runs, average submitted score, and latest submitted date
+- Team profile pages with members, active assessments, submitted assessments, latest score, and a create-assessment shortcut
+- Group profile pages with grouped team activity
+- Team membership management from the team profile
+- Confirmation guardrails for team, group, and membership removal
 - Team data separated from content libraries
 
 ## Assessments
@@ -213,7 +223,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 ## Audit and Notifications
 
 - Admin audit trail page
-- Audit logging for key auth, user, run, and report-share events
+- Audit logging for key auth, user, run, report-share, team, team-group, and team-membership events
 - In-app notifications for:
   - new assignment
   - reassignment
@@ -227,6 +237,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - AI configuration persistence and encrypted provider-secret storage
 - Root `.env` as single source of truth
 - `User` persistence for login/session handling, role assignment, and team membership
+- `TeamGroup` persistence for optional team categorization
 - `ReportShareLink` persistence for read-only shared results access
 - `AuditLog` persistence for governance history
 - `Notification` persistence for user-level in-app alerts

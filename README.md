@@ -10,6 +10,7 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 - Operational assessment management for active, submitted, and archived runs
 - Results and reporting views for team history and cross-team current-state analysis
 - Real user management with roles, team membership, login, logout, and password management
+- Team groups, team profiles, and team activity summaries for organizing assessment ownership
 - Invitation-based onboarding with activation links and forced first password setup
 - Report sharing for submitted results via tokenized read-only links
 - Optional SMTP-backed email sending for submitted reports when enabled by an admin
@@ -32,7 +33,7 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 - `Templates`: author and version reusable assessment templates
 - `Reports`: cross-team reporting and current-state analysis
 - `Administration`: admin workspace for user management, system configurations, and audit trail
-- `Teams`: manage teams that participate in assessments
+- `Teams`: manage teams, team groups, memberships, and team assessment activity
 - `Libraries`: manage reusable categories, domains, and questions
 
 ## Authentication
@@ -68,6 +69,7 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
 - Assignment history on assessment runs so ownership changes are visible over time
 - Run lifecycle with `DRAFT`, `IN_PROGRESS`, `SUBMITTED`, and `ARCHIVED`
 - Role-aware navigation and backend access control for templates, libraries, users, teams, assessments, and reports
+- Teams workspace with optional team groups, group metrics, team profiles, membership management, and compact/card directory views
 - Dashboard `My work` section for assigned runs and team-visible active work
 - Dedicated `My Assessments` page for assigned active runs, team queue, and submitted access
 - Autosave and manual save while taking assessments
@@ -109,6 +111,7 @@ Assessment Platform `v1.0` is a full-stack team assessment management app for cr
   - PostgreSQL dump download when `pg_dump` is available to the backend
 - Audit and notifications:
   - audit trail inside the Administration section
+  - audit coverage for team, team group, and membership changes
   - in-app notifications for assignments, submissions, due-soon, and overdue runs
 
 ## AI Notes
