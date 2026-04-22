@@ -16,6 +16,14 @@ import { Button } from "@/components/ui/button";
 import type { AiStatus, LatestByTeamReport, LatestByTeamReportsResponse, ReportsAiBrief } from "@/types";
 import { toast } from "sonner";
 
+type ReportChartTickProps = {
+  x?: number;
+  y?: number;
+  payload?: {
+    value?: string;
+  };
+};
+
 function formatDate(value: string | null | undefined) {
   if (!value) {
     return "-";
@@ -58,6 +66,30 @@ function badgeTone(score: number | null | undefined) {
   }
 
   return "secondary" as const;
+}
+
+function truncateChartLabel(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+}
+
+function ReportChartTick({ x = 0, y = 0, payload }: ReportChartTickProps) {
+  const rawLabel = payload?.value ?? "";
+  const [teamName, templateName] = rawLabel.split(" · ");
+
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text textAnchor="end" fill="hsl(var(--muted-foreground))" fontSize={12}>
+        <tspan x={0} dy={templateName ? -3 : 4}>
+          {truncateChartLabel(teamName, 26)}
+        </tspan>
+        {templateName ? (
+          <tspan x={0} dy={14} fill="hsl(var(--muted-foreground))" opacity={0.78}>
+            {truncateChartLabel(templateName, 28)}
+          </tspan>
+        ) : null}
+      </text>
+    </g>
+  );
 }
 
 export function ReportsPage() {
@@ -280,10 +312,13 @@ export function ReportsPage() {
         .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
         .map((item) => ({
           label: viewMode === "team-template" ? `${item.teamName} · ${item.templateName}` : item.teamName,
+          teamName: item.teamName,
+          templateName: item.templateName,
           overallScore: item.overallScore ?? 0
         })),
     [filteredLatestRows, viewMode]
   );
+  const chartHeight = Math.max(340, chartData.length * (viewMode === "team-template" ? 48 : 40));
 
   const selectedQuestionLabel = questionFilter !== "all" ? questionFilter : null;
   const selectedDomainLabel = domainFilter !== "all" ? domainFilter : null;
@@ -765,16 +800,33 @@ export function ReportsPage() {
                   : "Current score position based on each team’s latest submitted run."}
             </CardDescription>
           </CardHeader>
-          <CardContent className="h-[360px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} layout="vertical" margin={{ left: 12 }}>
-                <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.15} />
-                <XAxis domain={[0, 5]} type="number" />
-                <YAxis dataKey="label" type="category" width={viewMode === "team-template" ? 180 : 140} />
-                <Tooltip />
-                <Bar dataKey="overallScore" fill="hsl(var(--primary))" radius={[0, 10, 10, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+          <CardContent>
+            <div className="max-h-[520px] overflow-y-auto overflow-x-hidden pr-2">
+              <div style={{ height: chartHeight }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} layout="vertical" margin={{ left: 12, right: 18, top: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.15} />
+                    <XAxis domain={[0, 5]} type="number" />
+                    <YAxis
+                      dataKey="label"
+                      interval={0}
+                      tick={<ReportChartTick />}
+                      tickLine={false}
+                      type="category"
+                      width={viewMode === "team-template" ? 220 : 170}
+                    />
+                    <Tooltip
+                      formatter={(value) => [typeof value === "number" ? value.toFixed(2) : value, "Score"]}
+                      labelFormatter={(_label, items) => {
+                        const payload = items?.[0]?.payload as { teamName?: string; templateName?: string } | undefined;
+                        return payload?.templateName ? `${payload.teamName} · ${payload.templateName}` : payload?.teamName ?? "";
+                      }}
+                    />
+                    <Bar dataKey="overallScore" fill="hsl(var(--primary))" radius={[0, 10, 10, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
