@@ -159,6 +159,13 @@ See [FEATURES_V1.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessme
 - Deployment: [DEPLOYMENT.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/DEPLOYMENT.md)
 - User guide: [USER_GUIDE.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/USER_GUIDE.md)
 - Changelog: [CHANGELOG.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/CHANGELOG.md)
+- v2 roadmap: [ROADMAP_V2.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/ROADMAP_V2.md)
+
+## Version 2.0 Preparation
+
+The current `v1.0` product is a team-level collaborative assessment platform. Planned v2 work should expand the target/participant model to support team, group, individual internal, standalone internal, and external participant assessments without assuming every assessment subject is a `Team`.
+
+See [ROADMAP_V2.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/ROADMAP_V2.md) for the working v2 direction.
 
 ## Database Notes
 

@@ -179,6 +179,8 @@ If the Prisma schema changes:
 npm run db:push
 ```
 
+For the current v1 baseline, `TeamGroup` and `Team.groupId` are part of the schema. Live environments should run `npm run db:push` after pulling these changes so the database is synchronized before users manage team groups.
+
 If you also want fresh demo/reference data:
 
 ```powershell

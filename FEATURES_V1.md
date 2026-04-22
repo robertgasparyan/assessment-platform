@@ -263,3 +263,9 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 ## Release Baseline
 
 Treat the current repository state as `Assessment Platform v1.0`.
+
+## Version 2 Preparation
+
+Version `v1.0` is intentionally team-level. The v2 roadmap should expand the assessment target model beyond only teams.
+
+Planned v2 direction lives in [ROADMAP_V2.md](/C:/Users/Robert%20Gasparyan/Documents/Development/assessment-platform/ROADMAP_V2.md).

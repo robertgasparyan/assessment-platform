@@ -24,3 +24,4 @@ Initial `Assessment Platform v1.0` release baseline.
 - Admin export tools for portable/full JSON export plus PostgreSQL dump download
 - PostgreSQL + Prisma persistence model
 - Installation and database documentation
+- v2 roadmap documentation for broader participant/target modeling, external collaboration, group reporting, action planning, stronger auth, notification upgrades, AI assistant maturity, and import/export maturity
