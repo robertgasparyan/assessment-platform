@@ -1612,6 +1612,28 @@ router.get("/health", async (_request, response) => {
   response.json({ ok: true });
 });
 
+router.get("/settings/application-branding", async (_request, response) => {
+  response.json(await getApplicationBrandingSettings());
+});
+
+router.get("/settings/navigation-search", async (_request, response) => {
+  response.json(await getNavigationSearchSettings());
+});
+
+router.get("/settings/ai-assistant", async (_request, response) => {
+  const settings = await getAiAssistantSettings();
+  const aiStatus = await getAiStatusForUser();
+
+  response.json({
+    enabled: settings.enabled,
+    available: settings.enabled && aiStatus.enabled
+  });
+});
+
+router.get("/settings/ai-status", async (_request, response) => {
+  response.json(await getAiStatusForUser());
+});
+
 router.post("/auth/login", async (request, response) => {
   const input = loginSchema.parse(request.body);
   const user = await prisma.user.findUnique({
@@ -2047,28 +2069,6 @@ router.get("/auth/me", async (request, response) => {
 router.get("/settings/report-email-delivery", async (request, response) => {
   const settings = await getReportEmailDeliverySettings();
   response.json(serializeReportEmailDeliverySettings(settings, request.adminUser?.role === UserRole.ADMIN));
-});
-
-router.get("/settings/application-branding", async (_request, response) => {
-  response.json(await getApplicationBrandingSettings());
-});
-
-router.get("/settings/navigation-search", async (_request, response) => {
-  response.json(await getNavigationSearchSettings());
-});
-
-router.get("/settings/ai-assistant", async (_request, response) => {
-  const settings = await getAiAssistantSettings();
-  const aiStatus = await getAiStatusForUser();
-
-  response.json({
-    enabled: settings.enabled,
-    available: settings.enabled && aiStatus.enabled
-  });
-});
-
-router.get("/settings/ai-status", async (_request, response) => {
-  response.json(await getAiStatusForUser());
 });
 
 router.get("/settings/ai-configuration", requireRole(UserRole.ADMIN), async (_request, response) => {
