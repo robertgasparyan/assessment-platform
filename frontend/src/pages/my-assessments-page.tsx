@@ -97,9 +97,13 @@ export function MyAssessmentsPage() {
   });
 
   const summary = myAssessmentsQuery.data;
+  const individualActive = summary?.individualActive ?? [];
+  const assignedActive = summary?.assignedActive ?? [];
+  const teamActive = summary?.teamActive ?? [];
+  const submittedAccessible = summary?.submittedAccessible ?? [];
   const allActive = useMemo(
-    () => [...(summary?.assignedActive ?? []), ...(summary?.teamActive ?? [])],
-    [summary?.assignedActive, summary?.teamActive]
+    () => [...assignedActive, ...teamActive],
+    [assignedActive, teamActive]
   );
 
   return (
@@ -113,35 +117,35 @@ export function MyAssessmentsPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard hint="Runs where you are the explicit owner" label="Assigned to me" value={summary?.assignedActive.length ?? "-"} />
-        <StatCard hint="Individual team-member responses assigned to you" label="My responses" value={summary?.individualActive.length ?? "-"} />
-        <StatCard hint="Other active team work you can contribute to" label="Team queue" value={summary?.teamActive.length ?? "-"} />
-        <StatCard hint="Submitted runs you can review" label="Submitted access" value={summary?.submittedAccessible.length ?? "-"} />
+        <StatCard hint="Runs where you are the explicit owner" label="Assigned to me" value={assignedActive.length} />
+        <StatCard hint="Individual team-member responses assigned to you" label="My responses" value={individualActive.length} />
+        <StatCard hint="Other active team work you can contribute to" label="Team queue" value={teamActive.length} />
+        <StatCard hint="Submitted runs you can review" label="Submitted access" value={submittedAccessible.length} />
       </div>
 
       <RunTable
         description="Individual team-member assessments where your response is collected separately."
         emptyMessage="No individual responses are currently assigned to you."
         individual
-        runs={summary?.individualActive ?? []}
+        runs={individualActive}
         submitted={false}
       />
       <RunTable
         description="Runs where you are the current assigned owner."
         emptyMessage="No active runs are currently assigned to you."
-        runs={summary?.assignedActive ?? []}
+        runs={assignedActive}
         submitted={false}
       />
       <RunTable
         description="Other active runs that are visible through your team memberships."
         emptyMessage="No additional team runs are currently available."
-        runs={summary?.teamActive ?? []}
+        runs={teamActive}
         submitted={false}
       />
       <RunTable
         description="Submitted runs you can review or compare."
         emptyMessage="No submitted runs are currently visible to you."
-        runs={summary?.submittedAccessible ?? []}
+        runs={submittedAccessible}
         submitted={true}
       />
 
