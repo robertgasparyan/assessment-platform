@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   AiTemplateBuilder,
 } from "@/components/ai-template-builder";
+import { AiTemplateChatBuilder } from "@/components/ai-template-chat-builder";
 import {
   TemplateAuthoringStudio,
   type TemplateAuthoringDraft
@@ -134,6 +135,18 @@ function exportPublishedTemplateCsv(detail: TemplateDetail) {
   toast.success("Template exported");
 }
 
+function getDraftChecklist(draft: TemplateDraft) {
+  const questions = draft.domains.flatMap((domain) => domain.questions);
+  return [
+    { label: "Name and slug set", done: Boolean(draft.name.trim() && draft.slug.trim()) },
+    { label: "Category selected", done: Boolean(draft.category) },
+    { label: "At least one domain", done: draft.domains.length > 0 },
+    { label: "Every domain has questions", done: draft.domains.length > 0 && draft.domains.every((domain) => domain.questions.length > 0) },
+    { label: "Question prompts completed", done: questions.length > 0 && questions.every((question) => question.prompt.trim()) },
+    { label: "Maturity labels complete", done: draft.scoringLabels.length >= 2 && questions.every((question) => question.levels.length === draft.scoringLabels.length) }
+  ];
+}
+
 export function TemplatesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -229,6 +242,15 @@ export function TemplatesPage() {
       toast.success("Template draft deleted");
       setActiveDraftId(null);
       queryClient.invalidateQueries({ queryKey: ["template-drafts"] });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const updateDraftStatusMutation = useMutation({
+    mutationFn: ({ draftId, status }: { draftId: string; status: "DRAFT" | "READY_FOR_REVIEW" }) =>
+      api.put<TemplateDraft>(`/template-drafts/${draftId}/status`, { status }),
+    onSuccess: async () => {
+      toast.success("Draft status updated");
+      await queryClient.invalidateQueries({ queryKey: ["template-drafts"] });
     },
     onError: (error: Error) => toast.error(error.message)
   });
@@ -344,6 +366,7 @@ export function TemplatesPage() {
       <Tabs value={templateTab} onValueChange={setTemplateTab}>
         <TabsList>
           <TabsTrigger value="author">Author</TabsTrigger>
+          {aiStatusQuery.data?.enabled ? <TabsTrigger value="ai-chat">AI Chat</TabsTrigger> : null}
           {aiStatusQuery.data?.enabled ? <TabsTrigger value="ai-builder">AI Builder</TabsTrigger> : null}
           <TabsTrigger value="drafts">Drafts</TabsTrigger>
           <TabsTrigger value="existing">Existing Templates</TabsTrigger>
@@ -414,8 +437,8 @@ export function TemplatesPage() {
         </TabsContent>
 
         {aiStatusQuery.data?.enabled ? (
-          <TabsContent value="ai-builder">
-            <AiTemplateBuilder
+          <TabsContent value="ai-chat">
+            <AiTemplateChatBuilder
               categories={categoriesQuery.data ?? []}
               onSaveGeneratedDraft={async (draft) => {
                 const saved = await saveDraftMutation.mutateAsync({ draft, draftId: null });
@@ -431,6 +454,27 @@ export function TemplatesPage() {
                 window.scrollTo({ top: 0, behavior: "smooth" });
               }}
             />
+          </TabsContent>
+        ) : null}
+
+        {aiStatusQuery.data?.enabled ? (
+          <TabsContent value="ai-builder">
+              <AiTemplateBuilder
+                categories={categoriesQuery.data ?? []}
+                onSaveGeneratedDraft={async (draft) => {
+                  const saved = await saveDraftMutation.mutateAsync({ draft, draftId: null });
+                  setActiveDraftId(saved.id);
+                  setAiBuilderDraft(draft);
+                  toast.success("Generated draft saved");
+                }}
+                onContinueToAuthoring={(draft) => {
+                  setAiBuilderDraft(draft);
+                  setEditingTemplateId(null);
+                  setActiveDraftId(null);
+                  setTemplateTab("author");
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+              />
           </TabsContent>
         ) : null}
 
@@ -466,63 +510,91 @@ export function TemplatesPage() {
                     </div>
                   </div>
                 </button>
-                {(draftsQuery.data ?? []).map((draft) => (
-                  <div
-                    className={`rounded-[1.25rem] border p-4 transition ${
-                      activeDraftId === draft.id ? "border-primary bg-primary/8" : "bg-white"
-                    }`}
-                    key={draft.id}
-                  >
-                    <button
-                      className="w-full text-left"
-                      onClick={() => {
-                        setActiveDraftId(draft.id);
-                        setEditingTemplateId(null);
-                        setAiBuilderDraft(null);
-                      }}
-                      type="button"
+                {(draftsQuery.data ?? []).map((draft) => {
+                  const checklist = getDraftChecklist(draft);
+                  const readyCount = checklist.filter((item) => item.done).length;
+                  const isReady = readyCount === checklist.length;
+
+                  return (
+                    <div
+                      className={`rounded-[1.25rem] border p-4 transition ${
+                        activeDraftId === draft.id ? "border-primary bg-primary/8" : "bg-white"
+                      }`}
+                      key={draft.id}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="font-semibold">{draft.name || "Untitled draft"}</div>
-                          <div className="mt-1 text-sm text-muted-foreground">
-                            {draft.domains.length} domains · {draft.scoringLabels.length} levels
-                          </div>
-                        </div>
-                        <Badge variant="outline">{draft.status}</Badge>
-                      </div>
-                    </button>
-                    <div className="mt-3 flex gap-2">
                       <button
-                        className="text-sm font-medium text-primary"
+                        className="w-full text-left"
                         onClick={() => {
                           setActiveDraftId(draft.id);
                           setEditingTemplateId(null);
                           setAiBuilderDraft(null);
-                          setTemplateTab("author");
                         }}
                         type="button"
                       >
-                        Resume
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-semibold">{draft.name || "Untitled draft"}</div>
+                            <div className="mt-1 text-sm text-muted-foreground">
+                              {draft.domains.length} domains · {draft.scoringLabels.length} levels · {readyCount}/{checklist.length} checklist
+                            </div>
+                          </div>
+                          <Badge variant={draft.status === "READY_FOR_REVIEW" ? "success" : "outline"}>
+                            {draft.status === "READY_FOR_REVIEW" ? "Ready for review" : "Draft"}
+                          </Badge>
+                        </div>
                       </button>
-                      <button
-                        className="text-sm font-medium text-muted-foreground"
-                        onClick={() => exportDraftTemplateCsv(draft)}
-                        type="button"
-                      >
-                        Export .csv
-                      </button>
-                      <button
-                        className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground"
-                        onClick={() => deleteDraftMutation.mutate(draft.id)}
-                        type="button"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete
-                      </button>
+                      <div className="mt-3 grid gap-1 text-xs text-muted-foreground md:grid-cols-2">
+                        {checklist.map((item) => (
+                          <div className={item.done ? "text-emerald-700" : ""} key={item.label}>
+                            {item.done ? "✓" : "○"} {item.label}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          className="text-sm font-medium text-primary"
+                          onClick={() => {
+                            setActiveDraftId(draft.id);
+                            setEditingTemplateId(null);
+                            setAiBuilderDraft(null);
+                            setTemplateTab("author");
+                          }}
+                          type="button"
+                        >
+                          Resume
+                        </button>
+                        <button
+                          className="text-sm font-medium text-muted-foreground"
+                          onClick={() => exportDraftTemplateCsv(draft)}
+                          type="button"
+                        >
+                          Export .csv
+                        </button>
+                        <button
+                          className="text-sm font-medium text-muted-foreground disabled:opacity-50"
+                          disabled={!isReady || updateDraftStatusMutation.isPending}
+                          onClick={() =>
+                            updateDraftStatusMutation.mutate({
+                              draftId: draft.id,
+                              status: draft.status === "READY_FOR_REVIEW" ? "DRAFT" : "READY_FOR_REVIEW"
+                            })
+                          }
+                          type="button"
+                        >
+                          {draft.status === "READY_FOR_REVIEW" ? "Return to draft" : "Mark ready"}
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground"
+                          onClick={() => deleteDraftMutation.mutate(draft.id)}
+                          type="button"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </CardContent>
             </Card>
           </div>

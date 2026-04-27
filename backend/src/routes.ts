@@ -1,4 +1,15 @@
-import { AssessmentPeriodType, AssessmentRunStatus, Prisma, TeamMembershipRole, UserRole } from "@prisma/client";
+import {
+  AssessmentParticipantStatus,
+  AssessmentParticipantVisibility,
+  AssessmentPeriodType,
+  AssessmentResponseMode,
+  AssessmentRunStatus,
+  AssessmentTargetType,
+  EmailDeliveryStatus,
+  Prisma,
+  TeamMembershipRole,
+  UserRole
+} from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "./db.js";
@@ -8,9 +19,11 @@ import { serializeAssessmentRun, serializeTemplateVersion } from "./lib/serializ
 import { recordAuditLog, createNotification } from "./lib/audit.js";
 import { buildAssessmentResultsPayload } from "./lib/results.js";
 import { generateResultsQuestionAnswer, getCachedOrGenerateResultsExecutiveSummary } from "./lib/ai-results.js";
+import { generateAggregationInsight } from "./lib/ai-aggregation.js";
 import { getCachedOrGenerateReportsAiBrief } from "./lib/ai-reports.js";
 import {
   generateDomainAssist,
+  generateChatTemplateDraft,
   generateFullTemplateDraft,
   generateSingleDomainQuestion,
   generateDomainQuestions,
@@ -127,14 +140,42 @@ const pointInTimeAssessmentRunSchema = z.object({
   referenceDate: z.string().datetime()
 });
 
+const participantCollectionSchema = z.object({
+  userIds: z.array(z.string().min(1)).optional(),
+  externalContactIds: z.array(z.string().min(1)).optional()
+});
+
+const assessmentParticipationSchema = z.object({
+  responseMode: z.nativeEnum(AssessmentResponseMode).optional(),
+  participantVisibility: z.nativeEnum(AssessmentParticipantVisibility).optional(),
+  minimumParticipantResponses: z.number().int().min(1).optional().nullable(),
+  participantCollection: participantCollectionSchema.optional()
+});
+
 const assessmentRunSchema = z
-  .union([quarterAssessmentRunSchema, customRangeAssessmentRunSchema, pointInTimeAssessmentRunSchema])
+  .union([
+    quarterAssessmentRunSchema.merge(assessmentParticipationSchema),
+    customRangeAssessmentRunSchema.merge(assessmentParticipationSchema),
+    pointInTimeAssessmentRunSchema.merge(assessmentParticipationSchema)
+  ])
   .superRefine((input, context) => {
     if (input.periodType === "CUSTOM_RANGE" && new Date(input.endDate) < new Date(input.startDate)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "End date must be on or after start date",
         path: ["endDate"]
+      });
+    }
+
+    const participantCount =
+      (input.participantCollection?.userIds?.length ?? 0)
+      + (input.participantCollection?.externalContactIds?.length ?? 0);
+
+    if (input.responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED && participantCount === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Individual aggregated runs need at least one participant.",
+        path: ["participantCollection"]
       });
     }
   });
@@ -152,6 +193,28 @@ const responseSchema = z.object({
 
 const submitAssessmentSchema = z.object({
   submissionSummary: z.string().trim().max(2000).optional()
+});
+
+const internalParticipantsSchema = z.object({
+  userIds: z.array(z.string().min(1)).min(1)
+});
+
+const externalParticipantsSchema = z.object({
+  externalContactIds: z.array(z.string().min(1)).min(1),
+  expiresInDays: z.number().int().min(1).max(90).optional()
+});
+
+const participantLinkLifecycleSchema = z.object({
+  expiresInDays: z.number().int().min(1).max(90).optional().nullable()
+});
+
+const actionItemSchema = z.object({
+  title: z.string().trim().min(1).max(180),
+  description: z.string().trim().max(2000).optional().or(z.literal("")),
+  domainTitle: z.string().trim().max(180).optional().or(z.literal("")),
+  ownerName: z.string().trim().max(120).optional().or(z.literal("")),
+  dueDate: z.string().datetime().optional().nullable(),
+  status: z.enum(["OPEN", "IN_PROGRESS", "DONE", "BLOCKED"]).optional()
 });
 
 const updateAssessmentRunSchema = z.object({
@@ -224,7 +287,15 @@ const reportShareSchema = z.object({
 
 const guestAssessmentLinkSchema = z.object({
   inviteLabel: z.string().trim().min(1).max(120).optional().or(z.literal("")),
+  externalContactId: z.string().trim().min(1).optional().or(z.literal("")),
   expiresInDays: z.number().int().min(1).max(30).optional()
+});
+
+const externalContactSchema = z.object({
+  displayName: z.string().trim().min(1).max(120),
+  email: z.string().trim().email().optional().or(z.literal("")),
+  organization: z.string().trim().max(160).optional().or(z.literal("")),
+  notes: z.string().trim().max(1000).optional().or(z.literal(""))
 });
 
 const guestAssessmentIdentitySchema = z.object({
@@ -469,6 +540,17 @@ const templateAiFullDraftSchema = z.object({
   scoringLabels: z.array(z.string()).min(2)
 });
 
+const templateAiChatDraftSchema = z.object({
+  messages: z.array(
+    z.object({
+      role: z.enum(["user", "assistant"]),
+      content: z.string().trim().min(1).max(4000)
+    })
+  ).min(1).max(20),
+  category: z.string(),
+  scoringLabels: z.array(z.string()).min(2)
+});
+
 const sendReportEmailSchema = z.object({
   recipientEmail: z.string().email(),
   recipientName: z.string().trim().max(120).optional().or(z.literal("")),
@@ -549,6 +631,10 @@ const templateDraftSchema = z.object({
   )
 });
 
+const templateDraftStatusSchema = z.object({
+  status: z.enum(["DRAFT", "READY_FOR_REVIEW"])
+});
+
 function serializeTemplateDraft(draft: {
   id: string;
   name: string;
@@ -619,6 +705,9 @@ function serializeUser(user: {
 function serializeAssessmentRunSummary(run: {
   id: string;
   title: string;
+  targetId?: string | null;
+  responseMode?: AssessmentResponseMode;
+  minimumParticipantResponses?: number | null;
   ownerUserId: string | null;
   ownerName: string | null;
   dueDate: Date | null;
@@ -643,6 +732,11 @@ function serializeAssessmentRunSummary(run: {
     createdAt?: Date;
     updatedAt?: Date;
   };
+  target?: {
+    id: string;
+    type: AssessmentTargetType;
+    displayName: string;
+  } | null;
   templateVersion: {
     id?: string;
     name: string;
@@ -653,6 +747,19 @@ function serializeAssessmentRunSummary(run: {
   return {
     id: run.id,
     title: run.title,
+    target: run.target
+      ? {
+          id: run.target.id,
+          type: run.target.type,
+          displayName: run.target.displayName
+        }
+      : {
+          id: run.targetId ?? run.team.id,
+          type: AssessmentTargetType.TEAM,
+          displayName: run.team.name
+        },
+    responseMode: run.responseMode ?? AssessmentResponseMode.SHARED,
+    minimumParticipantResponses: run.minimumParticipantResponses ?? null,
     ownerUser: run.ownerUserId
       ? {
           id: run.ownerUserId
@@ -764,10 +871,385 @@ async function findDuplicateRuns(input: z.infer<typeof assessmentRunSchema>) {
           group: true
         }
       },
+      target: true,
       templateVersion: true
     },
     orderBy: [{ updatedAt: "desc" }]
   });
+}
+
+async function ensureTeamAssessmentTarget(
+  transaction: Prisma.TransactionClient,
+  teamId: string
+) {
+  const team = await transaction.team.findUnique({
+    where: { id: teamId },
+    select: { id: true, name: true }
+  });
+
+  if (!team) {
+    throw new Error("Team not found");
+  }
+
+  return transaction.assessmentTarget.upsert({
+    where: { teamId: team.id },
+    create: {
+      type: AssessmentTargetType.TEAM,
+      displayName: team.name,
+      teamId: team.id
+    },
+    update: {
+      displayName: team.name
+    }
+  });
+}
+
+function normalizeParticipantUserIds(userIds: string[]) {
+  return Array.from(new Set(userIds.map((userId) => userId.trim()).filter(Boolean)));
+}
+
+async function findInvalidTeamParticipantUserIds(teamId: string, userIds: string[]) {
+  const normalizedUserIds = normalizeParticipantUserIds(userIds);
+  if (normalizedUserIds.length === 0) {
+    return [];
+  }
+
+  const memberships = await prisma.userTeamMembership.findMany({
+    where: {
+      teamId,
+      userId: {
+        in: normalizedUserIds
+      },
+      user: {
+        isActive: true
+      }
+    },
+    select: {
+      userId: true
+    }
+  });
+
+  const validUserIds = new Set(memberships.map((membership) => membership.userId));
+  return normalizedUserIds.filter((userId) => !validUserIds.has(userId));
+}
+
+async function createInternalParticipantSet({
+  transaction,
+  assessmentRunId,
+  userIds
+}: {
+  transaction: Prisma.TransactionClient;
+  assessmentRunId: string;
+  userIds: string[];
+}) {
+  const normalizedUserIds = normalizeParticipantUserIds(userIds);
+  if (normalizedUserIds.length === 0) {
+    return;
+  }
+
+  const users = await transaction.user.findMany({
+    where: {
+      id: { in: normalizedUserIds },
+      isActive: true
+    },
+    select: {
+      id: true,
+      displayName: true,
+      email: true
+    }
+  });
+
+  await Promise.all(
+    users.map((user) =>
+      transaction.assessmentRunParticipant.upsert({
+        where: {
+          assessmentRunId_userId: {
+            assessmentRunId,
+            userId: user.id
+          }
+        },
+        create: {
+          assessmentRunId,
+          userId: user.id,
+          displayName: user.displayName,
+          email: user.email,
+          status: AssessmentParticipantStatus.INVITED
+        },
+        update: {
+          displayName: user.displayName,
+          email: user.email
+        }
+      })
+    )
+  );
+}
+
+function normalizeExternalContactIds(contactIds: string[]) {
+  return Array.from(new Set(contactIds.map((contactId) => contactId.trim()).filter(Boolean)));
+}
+
+async function createExternalParticipantSet({
+  transaction,
+  assessmentRunId,
+  externalContactIds,
+  expiresAt
+}: {
+  transaction: Prisma.TransactionClient;
+  assessmentRunId: string;
+  externalContactIds: string[];
+  expiresAt?: Date | null;
+}) {
+  const normalizedContactIds = normalizeExternalContactIds(externalContactIds);
+  if (normalizedContactIds.length === 0) {
+    return;
+  }
+
+  const contacts = await transaction.externalContact.findMany({
+    where: {
+      id: { in: normalizedContactIds }
+    },
+    select: {
+      id: true,
+      displayName: true,
+      email: true
+    }
+  });
+
+  await Promise.all(
+    contacts.map((contact) =>
+      transaction.assessmentRunParticipant.upsert({
+        where: {
+          assessmentRunId_externalContactId: {
+            assessmentRunId,
+            externalContactId: contact.id
+          }
+        },
+        create: {
+          assessmentRunId,
+          externalContactId: contact.id,
+          externalAccessToken: createShareToken(),
+          externalAccessExpiresAt: expiresAt ?? null,
+          displayName: contact.displayName,
+          email: contact.email,
+          status: AssessmentParticipantStatus.INVITED
+        },
+        update: {
+          displayName: contact.displayName,
+          email: contact.email,
+          externalAccessRevoked: false,
+          externalAccessExpiresAt: expiresAt ?? undefined,
+          externalAccessToken: createShareToken()
+        }
+      })
+    )
+  );
+}
+
+function serializeAssessmentRunParticipant(participant: {
+  id: string;
+  displayName: string;
+  email: string | null;
+  status: AssessmentParticipantStatus;
+  invitedAt: Date;
+  startedAt: Date | null;
+  submittedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  user: {
+    id: string;
+    displayName: string;
+    username: string;
+    email: string | null;
+  } | null;
+  externalContact: {
+    id: string;
+    displayName: string;
+    email: string | null;
+    organization: string | null;
+  } | null;
+  externalAccessToken?: string | null;
+  externalAccessExpiresAt?: Date | null;
+  externalAccessRevoked?: boolean;
+  emailDeliveries?: Array<{
+    id: string;
+    type: string;
+    status: EmailDeliveryStatus;
+    recipientEmail: string;
+    sentAt: Date | null;
+    failedAt: Date | null;
+    createdAt: Date;
+    errorMessage: string | null;
+  }>;
+  _count?: {
+    responses: number;
+  };
+}) {
+  return {
+    id: participant.id,
+    displayName: participant.displayName,
+    email: participant.email,
+    status: participant.status,
+    invitedAt: participant.invitedAt,
+    startedAt: participant.startedAt,
+    submittedAt: participant.submittedAt,
+    createdAt: participant.createdAt,
+    updatedAt: participant.updatedAt,
+    user: participant.user,
+    externalContact: participant.externalContact,
+    externalAccessUrl: participant.externalAccessToken ? `/external-participant-assessments/${participant.externalAccessToken}` : null,
+    externalAccessExpiresAt: participant.externalAccessExpiresAt ?? null,
+    externalAccessRevoked: participant.externalAccessRevoked ?? false,
+    latestEmailDelivery: participant.emailDeliveries?.[0]
+      ? {
+          id: participant.emailDeliveries[0].id,
+          type: participant.emailDeliveries[0].type,
+          status: participant.emailDeliveries[0].status,
+          recipientEmail: participant.emailDeliveries[0].recipientEmail,
+          sentAt: participant.emailDeliveries[0].sentAt,
+          failedAt: participant.emailDeliveries[0].failedAt,
+          createdAt: participant.emailDeliveries[0].createdAt,
+          errorMessage: participant.emailDeliveries[0].errorMessage
+        }
+      : null,
+    responseCount: participant._count?.responses ?? 0
+  };
+}
+
+type ParticipantAssessmentRunGraph = Prisma.AssessmentRunGetPayload<{
+  include: {
+    team: {
+      include: {
+        group: true;
+      };
+    };
+    target: true;
+    ownerUser: true;
+    templateVersion: {
+      include: {
+        domains: {
+          include: {
+            questions: {
+              include: {
+                levels: true;
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+}>;
+
+type ParticipantWithResponses = Prisma.AssessmentRunParticipantGetPayload<{
+  include: {
+    responses: true;
+  };
+}>;
+
+function serializeParticipantAssessmentRun(run: ParticipantAssessmentRunGraph, participant: ParticipantWithResponses) {
+  const domains = run.templateVersion.domains
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((domain) => {
+      const questions = domain.questions
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((question) => {
+          const participantResponse = participant.responses.find((item) => item.questionId === question.id);
+          return {
+            id: question.id,
+            prompt: question.prompt,
+            guidance: question.guidance,
+            levels: question.levels
+              .sort((a, b) => a.sortOrder - b.sortOrder)
+              .map((level) => ({
+                id: level.id,
+                value: level.value,
+                label: level.label,
+                description: level.description
+              })),
+            response: participantResponse
+              ? {
+                  selectedValue: participantResponse.selectedValue,
+                  selectedLabel: participantResponse.selectedLabel,
+                  comment: participantResponse.comment
+                }
+              : null
+          };
+        });
+
+      const scoreValues = questions
+        .map((question) => question.response?.selectedValue)
+        .filter((value): value is number => typeof value === "number");
+
+      return {
+        id: domain.id,
+        title: domain.title,
+        description: domain.description,
+        answeredQuestions: questions.filter((question) => question.response).length,
+        totalQuestions: questions.length,
+        averageScore: scoreValues.length
+          ? Number((scoreValues.reduce((sum, value) => sum + value, 0) / scoreValues.length).toFixed(2))
+          : null,
+        questions
+      };
+    });
+
+  return {
+    id: run.id,
+    title: run.title,
+    target: run.target
+      ? {
+          id: run.target.id,
+          type: run.target.type,
+          displayName: run.target.displayName
+        }
+      : {
+          id: run.team.id,
+          type: AssessmentTargetType.TEAM,
+          displayName: run.team.name
+        },
+    responseMode: run.responseMode,
+    minimumParticipantResponses: run.minimumParticipantResponses,
+    team: run.team,
+    ownerUser: run.ownerUser
+      ? {
+          id: run.ownerUser.id,
+          displayName: run.ownerUser.displayName,
+          username: run.ownerUser.username,
+          role: run.ownerUser.role
+        }
+      : null,
+    ownerName: run.ownerName,
+    assignmentHistory: [],
+    dueDate: run.dueDate,
+    guestParticipationEnabled: run.guestParticipationEnabled,
+    guestResultsVisible: run.guestResultsVisible,
+    periodType: run.periodType,
+    periodLabel: run.periodLabel,
+    periodBucket: run.periodBucket,
+    periodSortDate: run.periodSortDate,
+    year: run.year,
+    quarter: run.quarter,
+    startDate: run.startDate,
+    endDate: run.endDate,
+    referenceDate: run.referenceDate,
+    status: run.status,
+    submittedAt: run.submittedAt,
+    submissionSummary: run.submissionSummary,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    overallScore: null,
+    templateVersion: serializeTemplateVersion(run.templateVersion),
+    domains,
+    participant: {
+      id: participant.id,
+      status: participant.status,
+      displayName: participant.displayName,
+      email: participant.email,
+      invitedAt: participant.invitedAt,
+      startedAt: participant.startedAt,
+      submittedAt: participant.submittedAt
+    }
+  };
 }
 
 type SessionUser = NonNullable<Express.Request["adminUser"]>;
@@ -892,6 +1374,22 @@ async function canAccessAssessmentRun(user: SessionUser, runId: string) {
     return true;
   }
 
+  const participant = await prisma.assessmentRunParticipant.findUnique({
+    where: {
+      assessmentRunId_userId: {
+        assessmentRunId: runId,
+        userId: user.id
+      }
+    },
+    select: {
+      id: true
+    }
+  });
+
+  if (participant) {
+    return true;
+  }
+
   const run = await prisma.assessmentRun.findUnique({
     where: { id: runId },
     select: {
@@ -916,6 +1414,42 @@ async function canAccessAssessmentRun(user: SessionUser, runId: string) {
 
   const teamIds = await getUserTeamIds(user.id);
   return teamIds.includes(run.teamId);
+}
+
+async function getInternalParticipantForUser(runId: string, userId: string) {
+  return prisma.assessmentRunParticipant.findUnique({
+    where: {
+      assessmentRunId_userId: {
+        assessmentRunId: runId,
+        userId
+      }
+    },
+    include: {
+      responses: true
+    }
+  });
+}
+
+async function getActiveExternalParticipant(token: string) {
+  return prisma.assessmentRunParticipant.findFirst({
+    where: {
+      externalAccessToken: token,
+      externalAccessRevoked: false,
+      externalContactId: {
+        not: null
+      },
+      assessmentRun: {
+        responseMode: AssessmentResponseMode.INDIVIDUAL_AGGREGATED,
+        status: {
+          in: [AssessmentRunStatus.DRAFT, AssessmentRunStatus.IN_PROGRESS]
+        }
+      },
+      OR: [{ externalAccessExpiresAt: null }, { externalAccessExpiresAt: { gt: new Date() } }]
+    },
+    include: {
+      responses: true
+    }
+  });
 }
 
 async function canManageAssessmentRun(user: SessionUser, runId: string) {
@@ -1119,9 +1653,14 @@ function buildGuestAssessmentUrl(token: string) {
   return `${config.clientUrl.replace(/\/$/, "")}/guest-assessments/${token}`;
 }
 
+function buildExternalParticipantAssessmentUrl(token: string) {
+  return `${config.clientUrl.replace(/\/$/, "")}/external-participant-assessments/${token}`;
+}
+
 function serializeGuestAssessmentLink(link: {
   id: string;
   token: string;
+  externalContactId?: string | null;
   inviteLabel: string | null;
   guestDisplayName: string | null;
   guestEmail: string | null;
@@ -1135,6 +1674,7 @@ function serializeGuestAssessmentLink(link: {
   return {
     id: link.id,
     token: link.token,
+    externalContactId: link.externalContactId ?? null,
     inviteLabel: link.inviteLabel,
     guestDisplayName: link.guestDisplayName,
     guestEmail: link.guestEmail,
@@ -1146,6 +1686,181 @@ function serializeGuestAssessmentLink(link: {
     createdAt: link.createdAt,
     guestUrl: `/guest-assessments/${link.token}`
   };
+}
+
+function serializeExternalContact(contact: {
+  id: string;
+  displayName: string;
+  email: string | null;
+  organization: string | null;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  _count?: {
+    guestAssessmentLinks: number;
+    assessmentParticipants: number;
+    assessmentTargets: number;
+  };
+}) {
+  const usage = contact._count
+    ? {
+        guestLinks: contact._count.guestAssessmentLinks,
+        participants: contact._count.assessmentParticipants,
+        targets: contact._count.assessmentTargets,
+        total:
+          contact._count.guestAssessmentLinks
+          + contact._count.assessmentParticipants
+          + contact._count.assessmentTargets
+      }
+    : undefined;
+
+  return {
+    id: contact.id,
+    displayName: contact.displayName,
+    email: contact.email,
+    organization: contact.organization,
+    notes: contact.notes,
+    createdAt: contact.createdAt,
+    updatedAt: contact.updatedAt,
+    usage
+  };
+}
+
+function serializeEmailDeliveryLog(log: Prisma.EmailDeliveryLogGetPayload<{
+  include: {
+    assessmentRun: {
+      select: {
+        id: true;
+        title: true;
+        periodLabel: true;
+        team: { select: { id: true; name: true } };
+      };
+    };
+    createdByUser: { select: { id: true; displayName: true; username: true } };
+    guestLink: { select: { id: true; inviteLabel: true; guestDisplayName: true; guestEmail: true } };
+    participant: { select: { id: true; displayName: true; email: true } };
+  };
+}>) {
+  return {
+    id: log.id,
+    type: log.type,
+    status: log.status,
+    recipientEmail: log.recipientEmail,
+    recipientName: log.recipientName,
+    subject: log.subject,
+    errorMessage: log.errorMessage,
+    sentAt: log.sentAt,
+    failedAt: log.failedAt,
+    createdAt: log.createdAt,
+    updatedAt: log.updatedAt,
+    assessmentRun: log.assessmentRun
+      ? {
+          id: log.assessmentRun.id,
+          title: log.assessmentRun.title,
+          periodLabel: log.assessmentRun.periodLabel,
+          team: log.assessmentRun.team
+        }
+      : null,
+    guestLink: log.guestLink,
+    participant: log.participant,
+    createdByUser: log.createdByUser
+  };
+}
+
+function serializeActionItem(item: {
+  id: string;
+  assessmentRunId: string;
+  title: string;
+  description: string | null;
+  domainTitle: string | null;
+  ownerName: string | null;
+  dueDate: Date | null;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  createdByUser?: {
+    id: string;
+    displayName: string;
+    username: string;
+  } | null;
+}) {
+  return {
+    id: item.id,
+    assessmentRunId: item.assessmentRunId,
+    title: item.title,
+    description: item.description,
+    domainTitle: item.domainTitle,
+    ownerName: item.ownerName,
+    dueDate: item.dueDate,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    createdByUser: item.createdByUser ?? null
+  };
+}
+
+async function assertEmailDeliveryAvailable() {
+  const settings = await getReportEmailDeliverySettings();
+  if (!settings.enabled || !settings.available) {
+    throw new Error("Email delivery is disabled or SMTP is not configured.");
+  }
+}
+
+function buildApplicationUrl(path: string) {
+  return new URL(path, config.clientUrl).toString();
+}
+
+async function sendTrackedEmail(input: {
+  type: string;
+  to: string;
+  recipientName?: string | null;
+  subject: string;
+  body: string;
+  actorUserId?: string | null;
+  assessmentRunId?: string | null;
+  guestLinkId?: string | null;
+  participantId?: string | null;
+}) {
+  const log = await prisma.emailDeliveryLog.create({
+    data: {
+      type: input.type,
+      status: EmailDeliveryStatus.PENDING,
+      recipientEmail: input.to,
+      recipientName: input.recipientName?.trim() || null,
+      subject: input.subject,
+      assessmentRunId: input.assessmentRunId ?? null,
+      guestLinkId: input.guestLinkId ?? null,
+      participantId: input.participantId ?? null,
+      createdByUserId: input.actorUserId ?? null
+    }
+  });
+
+  try {
+    await assertEmailDeliveryAvailable();
+    await sendReportEmail({
+      to: input.to,
+      subject: input.subject,
+      body: input.body
+    });
+
+    return prisma.emailDeliveryLog.update({
+      where: { id: log.id },
+      data: {
+        status: EmailDeliveryStatus.SENT,
+        sentAt: new Date()
+      }
+    });
+  } catch (error) {
+    await prisma.emailDeliveryLog.update({
+      where: { id: log.id },
+      data: {
+        status: EmailDeliveryStatus.FAILED,
+        failedAt: new Date(),
+        errorMessage: error instanceof Error ? error.message : String(error)
+      }
+    });
+    throw error;
+  }
 }
 
 async function getActiveGuestAssessmentLink(token: string) {
@@ -1169,6 +1884,7 @@ async function getActiveGuestAssessmentLink(token: string) {
               group: true
             }
           },
+          target: true,
           ownerUser: true,
           assignmentHistory: {
             include: {
@@ -1536,6 +2252,7 @@ async function getLatestSubmittedRunsByTeam() {
           group: true
         }
       },
+      target: true,
       ownerUser: true,
       templateVersion: {
         include: {
@@ -1577,6 +2294,7 @@ async function getLatestSubmittedRunsByTeamTemplate() {
           group: true
         }
       },
+      target: true,
       ownerUser: true,
       templateVersion: {
         include: {
@@ -1958,6 +2676,200 @@ router.get("/guest-assessments/:token/results", async (request, response) => {
       resultsVisible: true
     }
   });
+});
+
+router.get("/external-participant-assessments/:token", async (request, response) => {
+  const participant = await getActiveExternalParticipant(String(request.params.token));
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant assessment link is invalid or expired" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: participant.assessmentRunId },
+    include: {
+      team: {
+        include: {
+          group: true
+        }
+      },
+      target: true,
+      ownerUser: true,
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: {
+                include: {
+                  levels: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.INVITED) {
+    await prisma.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        status: AssessmentParticipantStatus.NOT_STARTED,
+        startedAt: participant.startedAt ?? new Date()
+      }
+    });
+    participant.status = AssessmentParticipantStatus.NOT_STARTED;
+    participant.startedAt = participant.startedAt ?? new Date();
+  }
+
+  response.json(serializeParticipantAssessmentRun(run, participant));
+});
+
+router.put("/external-participant-assessments/:token/responses", async (request, response) => {
+  const input = responseSchema.parse(request.body);
+  const participant = await getActiveExternalParticipant(String(request.params.token));
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant assessment link is invalid or expired" });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.SUBMITTED) {
+    return response.status(400).json({ message: "This individual response has already been submitted." });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: participant.assessmentRunId },
+    select: {
+      id: true,
+      title: true,
+      status: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment is no longer accepting participant responses." });
+  }
+
+  await prisma.$transaction(async (transaction) => {
+    await Promise.all(
+      input.responses.map((item) =>
+        transaction.participantAssessmentResponse.upsert({
+          where: {
+            participantId_questionId: {
+              participantId: participant.id,
+              questionId: item.questionId
+            }
+          },
+          update: {
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: item.comment ?? null
+          },
+          create: {
+            participantId: participant.id,
+            questionId: item.questionId,
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: item.comment ?? null
+          }
+        })
+      )
+    );
+
+    await transaction.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        status: AssessmentParticipantStatus.IN_PROGRESS,
+        startedAt: participant.startedAt ?? new Date()
+      }
+    });
+
+    if (run.status === AssessmentRunStatus.DRAFT && input.responses.length > 0) {
+      await transaction.assessmentRun.update({
+        where: { id: run.id },
+        data: {
+          status: AssessmentRunStatus.IN_PROGRESS
+        }
+      });
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.post("/external-participant-assessments/:token/submit", async (request, response) => {
+  const participant = await getActiveExternalParticipant(String(request.params.token));
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant assessment link is invalid or expired" });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.SUBMITTED) {
+    return response.status(400).json({ message: "This individual response has already been submitted." });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: participant.assessmentRunId },
+    include: {
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment is no longer accepting participant responses." });
+  }
+
+  const requiredQuestionIds = run.templateVersion.domains.flatMap((domain) => domain.questions.map((question) => question.id));
+  const answeredQuestionIds = new Set(participant.responses.map((item) => item.questionId));
+  const missingCount = requiredQuestionIds.filter((questionId) => !answeredQuestionIds.has(questionId)).length;
+
+  if (missingCount > 0) {
+    return response.status(400).json({ message: `Answer all required questions before submitting. ${missingCount} unanswered.` });
+  }
+
+  const updated = await prisma.assessmentRunParticipant.update({
+    where: { id: participant.id },
+    data: {
+      status: AssessmentParticipantStatus.SUBMITTED,
+      submittedAt: new Date(),
+      startedAt: participant.startedAt ?? new Date()
+    }
+  });
+
+  await logAudit({
+    actorUserId: null,
+    assessmentRunId: run.id,
+    entityType: "assessment_run_participant",
+    entityId: participant.id,
+    action: "assessment_run_participant.external_submitted",
+    summary: `${participant.displayName} submitted an external individual response for ${run.title}`,
+    metadata: {
+      externalContactId: participant.externalContactId
+    }
+  });
+
+  response.json(serializeAssessmentRunParticipant({ ...updated, user: null, externalContact: null, _count: { responses: participant.responses.length } }));
 });
 
 router.use(requireAdminAuth);
@@ -3589,6 +4501,26 @@ router.put("/template-drafts/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE
   response.json(serializeTemplateDraft(updated));
 });
 
+router.put("/template-drafts/:id/status", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateDraftStatusSchema.parse(request.body ?? {});
+  const updated = await prisma.templateDraft.update({
+    where: { id: String(request.params.id) },
+    data: {
+      status: input.status
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "template_draft",
+    entityId: updated.id,
+    action: "template_draft.status_updated",
+    summary: `${request.adminUser!.displayName} marked template draft ${updated.name} as ${input.status.toLowerCase().replace(/_/g, " ")}`
+  });
+
+  response.json(serializeTemplateDraft(updated));
+});
+
 router.delete("/template-drafts/:id", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
   await prisma.templateDraft.delete({
     where: { id: String(request.params.id) }
@@ -3908,6 +4840,7 @@ router.get("/assessment-runs", async (request, response) => {
           group: true
         }
       },
+      target: true,
       templateVersion: true
     },
     orderBy: {
@@ -3939,22 +4872,441 @@ router.get("/my-assessments", async (request, response) => {
           group: true
         }
       },
+      target: true,
       templateVersion: true
     },
     orderBy: [{ dueDate: "asc" }, { updatedAt: "desc" }]
   });
 
+  const individualParticipantRuns =
+    user.role === UserRole.VIEWER
+      ? []
+      : await prisma.assessmentRunParticipant.findMany({
+          where: {
+            userId: user.id,
+            assessmentRun: {
+              status: {
+                notIn: [AssessmentRunStatus.SUBMITTED, AssessmentRunStatus.ARCHIVED]
+              }
+            }
+          },
+          include: {
+            assessmentRun: {
+              include: {
+                team: {
+                  include: {
+                    group: true
+                  }
+                },
+                target: true,
+                templateVersion: true
+              }
+            }
+          },
+          orderBy: [{ submittedAt: "asc" }, { invitedAt: "desc" }]
+        });
+  const individualParticipantRunIds = new Set(individualParticipantRuns.map((participant) => participant.assessmentRunId));
+
   response.json({
+    individualActive: individualParticipantRuns.map((participant) => ({
+      ...serializeAssessmentRunSummary(participant.assessmentRun),
+      participantStatus: participant.status,
+      participantId: participant.id,
+      participantSubmittedAt: participant.submittedAt
+    })),
     assignedActive: accessibleRuns
       .filter((run) => run.ownerUserId === user.id && run.status !== AssessmentRunStatus.SUBMITTED && run.status !== AssessmentRunStatus.ARCHIVED)
       .map(serializeAssessmentRunSummary),
     teamActive: accessibleRuns
-      .filter((run) => run.ownerUserId !== user.id && run.status !== AssessmentRunStatus.SUBMITTED && run.status !== AssessmentRunStatus.ARCHIVED)
+      .filter(
+        (run) =>
+          run.ownerUserId !== user.id
+          && !individualParticipantRunIds.has(run.id)
+          && run.status !== AssessmentRunStatus.SUBMITTED
+          && run.status !== AssessmentRunStatus.ARCHIVED
+      )
       .map(serializeAssessmentRunSummary),
     submittedAccessible: accessibleRuns
       .filter((run) => run.status === AssessmentRunStatus.SUBMITTED)
       .map(serializeAssessmentRunSummary)
   });
+});
+
+router.get("/external-contacts", async (_request, response) => {
+  const contacts = await prisma.externalContact.findMany({
+    include: {
+      _count: {
+        select: {
+          guestAssessmentLinks: true,
+          assessmentParticipants: true,
+          assessmentTargets: true
+        }
+      }
+    },
+    orderBy: [{ displayName: "asc" }]
+  });
+
+  response.json(contacts.map(serializeExternalContact));
+});
+
+router.get("/external-contacts/:id/details", requireRole(UserRole.ADMIN), async (request, response) => {
+  const contact = await prisma.externalContact.findUnique({
+    where: { id: String(request.params.id) },
+    include: {
+      guestAssessmentLinks: {
+        include: {
+          assessmentRun: {
+            select: {
+              id: true,
+              title: true,
+              periodLabel: true,
+              status: true,
+              team: { select: { id: true, name: true } },
+              templateVersion: { select: { id: true, name: true, versionNumber: true } }
+            }
+          }
+        },
+        orderBy: { createdAt: "desc" }
+      },
+      assessmentParticipants: {
+        include: {
+          assessmentRun: {
+            select: {
+              id: true,
+              title: true,
+              periodLabel: true,
+              status: true,
+              team: { select: { id: true, name: true } },
+              templateVersion: { select: { id: true, name: true, versionNumber: true } }
+            }
+          },
+          emailDeliveries: {
+            orderBy: { createdAt: "desc" },
+            take: 5
+          },
+          _count: { select: { responses: true } }
+        },
+        orderBy: { invitedAt: "desc" }
+      },
+      _count: {
+        select: {
+          guestAssessmentLinks: true,
+          assessmentParticipants: true,
+          assessmentTargets: true
+        }
+      }
+    }
+  });
+
+  if (!contact) {
+    return response.status(404).json({ message: "External contact not found" });
+  }
+
+  response.json({
+    contact: serializeExternalContact(contact),
+    guestLinks: contact.guestAssessmentLinks.map((link) => ({
+      id: link.id,
+      inviteLabel: link.inviteLabel,
+      guestDisplayName: link.guestDisplayName,
+      guestEmail: link.guestEmail,
+      isRevoked: link.isRevoked,
+      expiresAt: link.expiresAt,
+      startedAt: link.startedAt,
+      lastAccessedAt: link.lastAccessedAt,
+      submittedAt: link.submittedAt,
+      createdAt: link.createdAt,
+      assessmentRun: link.assessmentRun
+    })),
+    participants: contact.assessmentParticipants.map((participant) => ({
+      ...serializeAssessmentRunParticipant({
+        ...participant,
+        user: null,
+        externalContact: {
+          id: contact.id,
+          displayName: contact.displayName,
+          email: contact.email,
+          organization: contact.organization
+        }
+      }),
+      assessmentRun: participant.assessmentRun,
+      recentEmailDeliveries: participant.emailDeliveries
+    }))
+  });
+});
+
+router.post("/external-contacts", async (request, response) => {
+  const input = externalContactSchema.parse(request.body ?? {});
+  const created = await prisma.externalContact.create({
+    data: {
+      displayName: input.displayName,
+      email: input.email?.trim() || null,
+      organization: input.organization?.trim() || null,
+      notes: input.notes?.trim() || null,
+      createdByUserId: request.adminUser!.id
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "external_contact",
+    entityId: created.id,
+    action: "external_contact.created",
+    summary: `${request.adminUser!.displayName} created external contact ${created.displayName}`
+  });
+
+  response.status(201).json(serializeExternalContact(created));
+});
+
+router.put("/external-contacts/:id", requireRole(UserRole.ADMIN), async (request, response) => {
+  const input = externalContactSchema.parse(request.body ?? {});
+  const existing = await prisma.externalContact.findUnique({
+    where: { id: String(request.params.id) }
+  });
+
+  if (!existing) {
+    return response.status(404).json({ message: "External contact not found" });
+  }
+
+  const updated = await prisma.externalContact.update({
+    where: { id: String(request.params.id) },
+    data: {
+      displayName: input.displayName,
+      email: input.email?.trim() || null,
+      organization: input.organization?.trim() || null,
+      notes: input.notes?.trim() || null
+    },
+    include: {
+      _count: {
+        select: {
+          guestAssessmentLinks: true,
+          assessmentParticipants: true,
+          assessmentTargets: true
+        }
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "external_contact",
+    entityId: updated.id,
+    action: "external_contact.updated",
+    summary: `${request.adminUser!.displayName} updated external contact ${updated.displayName}`
+  });
+
+  response.json(serializeExternalContact(updated));
+});
+
+router.delete("/external-contacts/:id", requireRole(UserRole.ADMIN), async (request, response) => {
+  const contact = await prisma.externalContact.findUnique({
+    where: { id: String(request.params.id) },
+    include: {
+      _count: {
+        select: {
+          guestAssessmentLinks: true,
+          assessmentParticipants: true,
+          assessmentTargets: true
+        }
+      }
+    }
+  });
+
+  if (!contact) {
+    return response.status(404).json({ message: "External contact not found" });
+  }
+
+  const usageCount =
+    contact._count.guestAssessmentLinks
+    + contact._count.assessmentParticipants
+    + contact._count.assessmentTargets;
+
+  if (usageCount > 0) {
+    return response.status(400).json({ message: "External contacts with assessment history cannot be deleted." });
+  }
+
+  await prisma.externalContact.delete({
+    where: { id: contact.id }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "external_contact",
+    entityId: contact.id,
+    action: "external_contact.deleted",
+    summary: `${request.adminUser!.displayName} deleted external contact ${contact.displayName}`
+  });
+
+  response.status(204).send();
+});
+
+router.get("/email-deliveries", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const deliveries = await prisma.emailDeliveryLog.findMany({
+    take: 150,
+    orderBy: [{ createdAt: "desc" }],
+    include: {
+      assessmentRun: {
+        select: {
+          id: true,
+          title: true,
+          periodLabel: true,
+          team: {
+            select: {
+              id: true,
+              name: true
+            }
+          }
+        }
+      },
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      },
+      guestLink: {
+        select: {
+          id: true,
+          inviteLabel: true,
+          guestDisplayName: true,
+          guestEmail: true
+        }
+      },
+      participant: {
+        select: {
+          id: true,
+          displayName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  response.json(deliveries.map(serializeEmailDeliveryLog));
+});
+
+router.get("/security-overview", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const now = new Date();
+  const [activeSessions, expiredSessions, pendingInvites, expiredInvites, externalLinks, revokedExternalLinks] = await Promise.all([
+    prisma.user.count({ where: { sessionToken: { not: null }, sessionExpiresAt: { gt: now } } }),
+    prisma.user.count({ where: { sessionToken: { not: null }, OR: [{ sessionExpiresAt: null }, { sessionExpiresAt: { lte: now } }] } }),
+    prisma.user.count({ where: { inviteToken: { not: null }, inviteExpiresAt: { gt: now } } }),
+    prisma.user.count({ where: { inviteToken: { not: null }, OR: [{ inviteExpiresAt: null }, { inviteExpiresAt: { lte: now } }] } }),
+    prisma.assessmentRunParticipant.count({
+      where: {
+        externalAccessToken: { not: null },
+        externalAccessRevoked: false,
+        OR: [{ externalAccessExpiresAt: null }, { externalAccessExpiresAt: { gt: now } }]
+      }
+    }),
+    prisma.assessmentRunParticipant.count({
+      where: {
+        externalAccessToken: { not: null },
+        externalAccessRevoked: true
+      }
+    })
+  ]);
+
+  response.json({
+    activeSessions,
+    expiredSessions,
+    pendingInvites,
+    expiredInvites,
+    activeExternalParticipantLinks: externalLinks,
+    revokedExternalParticipantLinks: revokedExternalLinks
+  });
+});
+
+router.get("/security/external-participant-links", requireRole(UserRole.ADMIN), async (_request, response) => {
+  const now = new Date();
+  const participants = await prisma.assessmentRunParticipant.findMany({
+    where: {
+      externalAccessToken: { not: null },
+      externalAccessRevoked: false,
+      status: { not: AssessmentParticipantStatus.SUBMITTED },
+      OR: [{ externalAccessExpiresAt: null }, { externalAccessExpiresAt: { gt: now } }]
+    },
+    include: {
+      externalContact: true,
+      assessmentRun: {
+        select: {
+          id: true,
+          title: true,
+          periodLabel: true,
+          team: { select: { id: true, name: true } }
+        }
+      }
+    },
+    orderBy: [{ externalAccessExpiresAt: "asc" }, { createdAt: "desc" }],
+    take: 50
+  });
+
+  response.json(
+    participants.map((participant) => ({
+      id: participant.id,
+      displayName: participant.displayName,
+      email: participant.email,
+      status: participant.status,
+      externalAccessUrl: participant.externalAccessToken ? `/external-participant-assessments/${participant.externalAccessToken}` : null,
+      externalAccessExpiresAt: participant.externalAccessExpiresAt,
+      createdAt: participant.createdAt,
+      externalContact: participant.externalContact
+        ? {
+            id: participant.externalContact.id,
+            displayName: participant.externalContact.displayName,
+            email: participant.externalContact.email,
+            organization: participant.externalContact.organization
+          }
+        : null,
+      assessmentRun: participant.assessmentRun
+    }))
+  );
+});
+
+router.post("/security/clear-expired-sessions", requireRole(UserRole.ADMIN), async (request, response) => {
+  const result = await prisma.user.updateMany({
+    where: {
+      sessionToken: { not: null },
+      OR: [{ sessionExpiresAt: null }, { sessionExpiresAt: { lte: new Date() } }]
+    },
+    data: {
+      sessionToken: null,
+      sessionExpiresAt: null
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "security",
+    entityId: "expired_sessions",
+    action: "security.expired_sessions_cleared",
+    summary: `${request.adminUser!.displayName} cleared ${result.count} expired user sessions`
+  });
+
+  response.json({ count: result.count });
+});
+
+router.post("/security/clear-expired-invites", requireRole(UserRole.ADMIN), async (request, response) => {
+  const result = await prisma.user.updateMany({
+    where: {
+      inviteToken: { not: null },
+      OR: [{ inviteExpiresAt: null }, { inviteExpiresAt: { lte: new Date() } }]
+    },
+    data: {
+      inviteToken: null,
+      inviteExpiresAt: null
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "security",
+    entityId: "expired_invites",
+    action: "security.expired_invites_cleared",
+    summary: `${request.adminUser!.displayName} cleared ${result.count} expired activation invites`
+  });
+
+  response.json({ count: result.count });
 });
 
 router.post("/assessment-runs/check-duplicate", async (request, response) => {
@@ -4004,16 +5356,49 @@ router.post("/assessment-runs", async (request, response) => {
     });
   }
 
+  const participantUserIds = normalizeParticipantUserIds(input.participantCollection?.userIds ?? []);
+  const externalContactIds = normalizeExternalContactIds(input.participantCollection?.externalContactIds ?? []);
+  if (input.responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED) {
+    const invalidUserIds = await findInvalidTeamParticipantUserIds(input.teamId, participantUserIds);
+    if (invalidUserIds.length > 0) {
+      return response.status(400).json({
+        message: "Individual participants must be active members of the selected team.",
+        invalidUserIds
+      });
+    }
+
+    if (externalContactIds.length > 0) {
+      const existingContacts = await prisma.externalContact.findMany({
+        where: { id: { in: externalContactIds } },
+        select: { id: true }
+      });
+      const existingContactIds = new Set(existingContacts.map((contact) => contact.id));
+      const invalidExternalContactIds = externalContactIds.filter((contactId) => !existingContactIds.has(contactId));
+      if (invalidExternalContactIds.length > 0) {
+        return response.status(400).json({
+          message: "One or more external contacts were not found.",
+          invalidExternalContactIds
+        });
+      }
+    }
+  }
+
   const period = buildAssessmentPeriod(input) satisfies Pick<
     Prisma.AssessmentRunUncheckedCreateInput,
     "periodType" | "periodLabel" | "periodBucket" | "periodSortDate" | "year" | "quarter" | "startDate" | "endDate" | "referenceDate"
   >;
   const ownerName = input.ownerName?.trim() || null;
   const created = await prisma.$transaction(async (transaction) => {
+    const target = await ensureTeamAssessmentTarget(transaction, input.teamId);
+    const responseMode = input.responseMode ?? AssessmentResponseMode.SHARED;
     const nextRun = await transaction.assessmentRun.create({
       data: {
         title: input.title,
         teamId: input.teamId,
+        targetId: target.id,
+        responseMode,
+        participantVisibility: input.participantVisibility ?? AssessmentParticipantVisibility.ANONYMOUS_AGGREGATED,
+        minimumParticipantResponses: input.minimumParticipantResponses ?? null,
         templateId: input.templateId,
         templateVersionId: input.templateVersionId,
         ownerUserId: input.ownerUserId ?? null,
@@ -4035,6 +5420,20 @@ router.post("/assessment-runs", async (request, response) => {
       });
     }
 
+    if (responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED) {
+      await createInternalParticipantSet({
+        transaction,
+        assessmentRunId: nextRun.id,
+        userIds: participantUserIds
+      });
+      await createExternalParticipantSet({
+        transaction,
+        assessmentRunId: nextRun.id,
+        externalContactIds,
+        expiresAt: null
+      });
+    }
+
     return nextRun;
   });
 
@@ -4044,7 +5443,11 @@ router.post("/assessment-runs", async (request, response) => {
     entityType: "assessment_run",
     entityId: created.id,
     action: "assessment_run.created",
-    summary: `${user.displayName} created assessment run ${created.title}`
+    summary: `${user.displayName} created assessment run ${created.title}`,
+    metadata: {
+      responseMode: created.responseMode,
+      targetId: created.targetId
+    }
   });
 
   await createRunNotification({
@@ -4070,6 +5473,7 @@ router.get("/assessment-runs/:id", async (request, response) => {
           group: true
         }
       },
+      target: true,
       ownerUser: true,
       assignmentHistory: {
         include: {
@@ -4103,6 +5507,1067 @@ router.get("/assessment-runs/:id", async (request, response) => {
   }
 
   response.json(serializeAssessmentRun(run));
+});
+
+router.get("/assessment-runs/:id/participants", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const participants = await prisma.assessmentRunParticipant.findMany({
+    where: {
+      assessmentRunId: runId
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true,
+          email: true
+        }
+      },
+      externalContact: {
+        select: {
+          id: true,
+          displayName: true,
+          email: true,
+          organization: true
+        }
+      },
+      emailDeliveries: {
+        orderBy: { createdAt: "desc" },
+        take: 1
+      },
+      _count: {
+        select: {
+          responses: true
+        }
+      }
+    },
+    orderBy: [{ displayName: "asc" }, { invitedAt: "asc" }]
+  });
+
+  response.json(participants.map(serializeAssessmentRunParticipant));
+});
+
+router.post("/assessment-runs/:id/participants/internal-users", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = internalParticipantsSchema.parse(request.body);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to manage participants for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      title: true,
+      teamId: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  const participantUserIds = normalizeParticipantUserIds(input.userIds);
+  const invalidUserIds = await findInvalidTeamParticipantUserIds(run.teamId, participantUserIds);
+  if (invalidUserIds.length > 0) {
+    return response.status(400).json({
+      message: "Individual participants must be active members of the assessment team.",
+      invalidUserIds
+    });
+  }
+
+  const participants = await prisma.$transaction(async (transaction) => {
+    await transaction.assessmentRun.update({
+      where: { id: runId },
+      data: {
+        responseMode: AssessmentResponseMode.INDIVIDUAL_AGGREGATED
+      }
+    });
+
+    await createInternalParticipantSet({
+      transaction,
+      assessmentRunId: runId,
+      userIds: participantUserIds
+    });
+
+    return transaction.assessmentRunParticipant.findMany({
+      where: {
+        assessmentRunId: runId
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            displayName: true,
+            username: true,
+            email: true
+          }
+        },
+        externalContact: {
+          select: {
+            id: true,
+            displayName: true,
+            email: true,
+            organization: true
+          }
+        },
+        emailDeliveries: {
+          orderBy: { createdAt: "desc" },
+          take: 1
+        },
+        _count: {
+          select: {
+            responses: true
+          }
+        }
+      },
+      orderBy: [{ displayName: "asc" }, { invitedAt: "asc" }]
+    });
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: run.id,
+    entityType: "assessment_run",
+    entityId: run.id,
+    action: "assessment_run.participants_updated",
+    summary: `${user.displayName} updated individual participants for ${run.title}`,
+    metadata: {
+      responseMode: AssessmentResponseMode.INDIVIDUAL_AGGREGATED,
+      participantUserIds
+    }
+  });
+
+  response.json(participants.map(serializeAssessmentRunParticipant));
+});
+
+router.post("/assessment-runs/:id/participants/external-contacts", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = externalParticipantsSchema.parse(request.body);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to manage participants for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      title: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  const externalContactIds = normalizeExternalContactIds(input.externalContactIds);
+  const existingContacts = await prisma.externalContact.findMany({
+    where: { id: { in: externalContactIds } },
+    select: { id: true }
+  });
+  const existingContactIds = new Set(existingContacts.map((contact) => contact.id));
+  const invalidExternalContactIds = externalContactIds.filter((contactId) => !existingContactIds.has(contactId));
+
+  if (invalidExternalContactIds.length > 0) {
+    return response.status(400).json({
+      message: "One or more external contacts were not found.",
+      invalidExternalContactIds
+    });
+  }
+
+  const expiresAt = input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null;
+  const participants = await prisma.$transaction(async (transaction) => {
+    await transaction.assessmentRun.update({
+      where: { id: runId },
+      data: {
+        responseMode: AssessmentResponseMode.INDIVIDUAL_AGGREGATED
+      }
+    });
+
+    await createExternalParticipantSet({
+      transaction,
+      assessmentRunId: runId,
+      externalContactIds,
+      expiresAt
+    });
+
+    return transaction.assessmentRunParticipant.findMany({
+      where: {
+        assessmentRunId: runId
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            displayName: true,
+            username: true,
+            email: true
+          }
+        },
+        externalContact: {
+          select: {
+            id: true,
+            displayName: true,
+            email: true,
+            organization: true
+          }
+        },
+        emailDeliveries: {
+          orderBy: { createdAt: "desc" },
+          take: 1
+        },
+        _count: {
+          select: {
+            responses: true
+          }
+        }
+      },
+      orderBy: [{ displayName: "asc" }, { invitedAt: "asc" }]
+    });
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: run.id,
+    entityType: "assessment_run",
+    entityId: run.id,
+    action: "assessment_run.external_participants_updated",
+    summary: `${user.displayName} updated external individual participants for ${run.title}`,
+    metadata: {
+      responseMode: AssessmentResponseMode.INDIVIDUAL_AGGREGATED,
+      externalContactIds,
+      expiresAt
+    }
+  });
+
+  response.json(participants.map(serializeAssessmentRunParticipant));
+});
+
+router.post("/assessment-runs/:id/participants/:participantId/send-invite-email", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to email participants for this run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: String(request.params.participantId),
+      assessmentRunId: runId
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          templateVersion: true
+        }
+      },
+      user: true,
+      externalContact: true
+    }
+  });
+
+  const recipientEmail = participant?.user?.email || participant?.email || participant?.externalContact?.email;
+  if (!participant || !recipientEmail) {
+    return response.status(400).json({ message: "Participant does not have an email address." });
+  }
+
+  const isExternalParticipant = Boolean(participant.externalContactId);
+  let externalAccessToken = isExternalParticipant && !participant.externalAccessRevoked ? participant.externalAccessToken : null;
+  if (isExternalParticipant && !externalAccessToken) {
+    const refreshedAccess = await prisma.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        externalAccessToken: createShareToken(),
+        externalAccessRevoked: false
+      },
+      select: {
+        externalAccessToken: true
+      }
+    });
+    externalAccessToken = refreshedAccess.externalAccessToken;
+  }
+  const participantUrl = isExternalParticipant && externalAccessToken
+    ? buildExternalParticipantAssessmentUrl(externalAccessToken)
+    : buildApplicationUrl(`/assessments/${runId}/participant`);
+  await sendTrackedEmail({
+    type: isExternalParticipant ? "external_participant_invite" : "internal_participant_invite",
+    to: recipientEmail,
+    recipientName: participant.displayName,
+    subject: `Assessment response requested: ${participant.assessmentRun.title}`,
+    body: [
+      `Hello ${participant.displayName},`,
+      "",
+      `${user.displayName} invited you to submit an individual assessment response.`,
+      "",
+      `Assessment: ${participant.assessmentRun.title}`,
+      `Team: ${participant.assessmentRun.team.name}`,
+      `Template: ${participant.assessmentRun.templateVersion.name} v${participant.assessmentRun.templateVersion.versionNumber}`,
+      isExternalParticipant && participant.externalAccessExpiresAt ? `Link expires: ${participant.externalAccessExpiresAt.toISOString()}` : "",
+      "",
+      `Open your response workspace: ${participantUrl}`,
+      "",
+      "Your answers are saved separately and will be aggregated after the required participant submissions are complete."
+    ].filter((line, index, lines) => line || lines[index - 1]).join("\n"),
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    participantId: participant.id
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: participant.id,
+    action: "assessment_run_participant.invite_email_sent",
+    summary: `${user.displayName} sent an individual assessment invite email to ${participant.displayName}`
+  });
+
+  response.json({ ok: true });
+});
+
+router.post("/assessment-runs/:id/participants/send-bulk-invites", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to email participants for this run" });
+  }
+
+  const participants = await prisma.assessmentRunParticipant.findMany({
+    where: {
+      assessmentRunId: runId,
+      status: {
+        not: AssessmentParticipantStatus.SUBMITTED
+      }
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          templateVersion: true
+        }
+      },
+      user: true,
+      externalContact: true
+    },
+    orderBy: [{ displayName: "asc" }]
+  });
+
+  let sent = 0;
+  let skipped = 0;
+  const failures: Array<{ participantId: string; displayName: string; message: string }> = [];
+
+  for (const participant of participants) {
+    const recipientEmail = participant.user?.email || participant.email || participant.externalContact?.email;
+    if (!recipientEmail) {
+      skipped += 1;
+      continue;
+    }
+
+    const isExternalParticipant = Boolean(participant.externalContactId);
+    let externalAccessToken = isExternalParticipant && !participant.externalAccessRevoked ? participant.externalAccessToken : null;
+    if (isExternalParticipant && !externalAccessToken) {
+      const refreshedAccess = await prisma.assessmentRunParticipant.update({
+        where: { id: participant.id },
+        data: {
+          externalAccessToken: createShareToken(),
+          externalAccessRevoked: false
+        },
+        select: {
+          externalAccessToken: true
+        }
+      });
+      externalAccessToken = refreshedAccess.externalAccessToken;
+    }
+
+    const participantUrl = isExternalParticipant && externalAccessToken
+      ? buildExternalParticipantAssessmentUrl(externalAccessToken)
+      : buildApplicationUrl(`/assessments/${runId}/participant`);
+
+    try {
+      await sendTrackedEmail({
+        type: isExternalParticipant ? "external_participant_invite" : "internal_participant_invite",
+        to: recipientEmail,
+        recipientName: participant.displayName,
+        subject: `Assessment response requested: ${participant.assessmentRun.title}`,
+        body: [
+          `Hello ${participant.displayName},`,
+          "",
+          `${user.displayName} invited you to submit an individual assessment response.`,
+          "",
+          `Assessment: ${participant.assessmentRun.title}`,
+          `Team: ${participant.assessmentRun.team.name}`,
+          `Template: ${participant.assessmentRun.templateVersion.name} v${participant.assessmentRun.templateVersion.versionNumber}`,
+          "",
+          `Open your response workspace: ${participantUrl}`,
+          "",
+          "Your answers are saved separately and will be aggregated after the required participant submissions are complete."
+        ].join("\n"),
+        actorUserId: user.id,
+        assessmentRunId: runId,
+        participantId: participant.id
+      });
+      sent += 1;
+    } catch (error) {
+      failures.push({
+        participantId: participant.id,
+        displayName: participant.displayName,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: runId,
+    action: "assessment_run_participant.bulk_invite_email_sent",
+    summary: `${user.displayName} sent ${sent} participant invite emails`,
+    metadata: { sent, skipped, failures: failures.length }
+  });
+
+  response.json({ sent, skipped, failed: failures.length, failures });
+});
+
+router.post("/assessment-runs/:id/participants/:participantId/send-reminder-email", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to email participants for this run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: String(request.params.participantId),
+      assessmentRunId: runId
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          templateVersion: true
+        }
+      },
+      user: true,
+      externalContact: true
+    }
+  });
+
+  const recipientEmail = participant?.user?.email || participant?.email || participant?.externalContact?.email;
+  if (!participant || !recipientEmail) {
+    return response.status(400).json({ message: "Participant does not have an email address." });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Participant has already submitted." });
+  }
+
+  const isExternalParticipant = Boolean(participant.externalContactId);
+  let externalAccessToken = isExternalParticipant && !participant.externalAccessRevoked ? participant.externalAccessToken : null;
+  if (isExternalParticipant && !externalAccessToken) {
+    const refreshedAccess = await prisma.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        externalAccessToken: createShareToken(),
+        externalAccessRevoked: false
+      },
+      select: {
+        externalAccessToken: true
+      }
+    });
+    externalAccessToken = refreshedAccess.externalAccessToken;
+  }
+
+  const participantUrl = isExternalParticipant && externalAccessToken
+    ? buildExternalParticipantAssessmentUrl(externalAccessToken)
+    : buildApplicationUrl(`/assessments/${runId}/participant`);
+
+  await sendTrackedEmail({
+    type: isExternalParticipant ? "external_participant_reminder" : "internal_participant_reminder",
+    to: recipientEmail,
+    recipientName: participant.displayName,
+    subject: `Reminder: assessment response needed for ${participant.assessmentRun.title}`,
+    body: [
+      `Hello ${participant.displayName},`,
+      "",
+      `${user.displayName} sent a reminder to complete your individual assessment response.`,
+      "",
+      `Assessment: ${participant.assessmentRun.title}`,
+      `Team: ${participant.assessmentRun.team.name}`,
+      `Template: ${participant.assessmentRun.templateVersion.name} v${participant.assessmentRun.templateVersion.versionNumber}`,
+      "",
+      `Open your response workspace: ${participantUrl}`
+    ].join("\n"),
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    participantId: participant.id
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: participant.id,
+    action: "assessment_run_participant.reminder_email_sent",
+    summary: `${user.displayName} sent an individual assessment reminder email to ${participant.displayName}`
+  });
+
+  response.json({ ok: true });
+});
+
+router.post("/assessment-runs/:id/participants/send-bulk-reminders", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to email participants for this run" });
+  }
+
+  const participants = await prisma.assessmentRunParticipant.findMany({
+    where: {
+      assessmentRunId: runId,
+      status: {
+        not: AssessmentParticipantStatus.SUBMITTED
+      }
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          templateVersion: true
+        }
+      },
+      user: true,
+      externalContact: true
+    },
+    orderBy: [{ displayName: "asc" }]
+  });
+
+  let sent = 0;
+  let skipped = 0;
+  const failures: Array<{ participantId: string; displayName: string; message: string }> = [];
+
+  for (const participant of participants) {
+    const recipientEmail = participant.user?.email || participant.email || participant.externalContact?.email;
+    if (!recipientEmail) {
+      skipped += 1;
+      continue;
+    }
+
+    const isExternalParticipant = Boolean(participant.externalContactId);
+    let externalAccessToken = isExternalParticipant && !participant.externalAccessRevoked ? participant.externalAccessToken : null;
+    if (isExternalParticipant && !externalAccessToken) {
+      const refreshedAccess = await prisma.assessmentRunParticipant.update({
+        where: { id: participant.id },
+        data: {
+          externalAccessToken: createShareToken(),
+          externalAccessRevoked: false
+        },
+        select: {
+          externalAccessToken: true
+        }
+      });
+      externalAccessToken = refreshedAccess.externalAccessToken;
+    }
+
+    const participantUrl = isExternalParticipant && externalAccessToken
+      ? buildExternalParticipantAssessmentUrl(externalAccessToken)
+      : buildApplicationUrl(`/assessments/${runId}/participant`);
+
+    try {
+      await sendTrackedEmail({
+        type: isExternalParticipant ? "external_participant_reminder" : "internal_participant_reminder",
+        to: recipientEmail,
+        recipientName: participant.displayName,
+        subject: `Reminder: assessment response needed for ${participant.assessmentRun.title}`,
+        body: [
+          `Hello ${participant.displayName},`,
+          "",
+          `${user.displayName} sent a reminder to complete your individual assessment response.`,
+          "",
+          `Assessment: ${participant.assessmentRun.title}`,
+          `Team: ${participant.assessmentRun.team.name}`,
+          `Template: ${participant.assessmentRun.templateVersion.name} v${participant.assessmentRun.templateVersion.versionNumber}`,
+          "",
+          `Open your response workspace: ${participantUrl}`
+        ].join("\n"),
+        actorUserId: user.id,
+        assessmentRunId: runId,
+        participantId: participant.id
+      });
+      sent += 1;
+    } catch (error) {
+      failures.push({
+        participantId: participant.id,
+        displayName: participant.displayName,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: runId,
+    action: "assessment_run_participant.bulk_reminder_email_sent",
+    summary: `${user.displayName} sent ${sent} participant reminder emails`,
+    metadata: {
+      sent,
+      skipped,
+      failures: failures.length
+    }
+  });
+
+  response.json({ sent, skipped, failed: failures.length, failures });
+});
+
+router.get("/assessment-runs/:id/participants/:participantId/email-deliveries", async (request, response) => {
+  const runId = String(request.params.id);
+  const participantId = String(request.params.participantId);
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: participantId,
+      assessmentRunId: runId
+    },
+    select: { id: true }
+  });
+
+  if (!participant) {
+    return response.status(404).json({ message: "Participant not found" });
+  }
+
+  const deliveries = await prisma.emailDeliveryLog.findMany({
+    where: {
+      participantId
+    },
+    orderBy: { createdAt: "desc" },
+    take: 25,
+    include: {
+      assessmentRun: {
+        select: {
+          id: true,
+          title: true,
+          periodLabel: true,
+          team: { select: { id: true, name: true } }
+        }
+      },
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      },
+      guestLink: {
+        select: {
+          id: true,
+          inviteLabel: true,
+          guestDisplayName: true,
+          guestEmail: true
+        }
+      },
+      participant: {
+        select: {
+          id: true,
+          displayName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  response.json(deliveries.map(serializeEmailDeliveryLog));
+});
+
+router.put("/assessment-runs/:id/participants/:participantId/external-link/expiry", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = participantLinkLifecycleSchema.parse(request.body ?? {});
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to manage participant links for this run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: String(request.params.participantId),
+      assessmentRunId: runId,
+      externalContactId: { not: null }
+    },
+    select: { id: true }
+  });
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant not found." });
+  }
+
+  const expiresAt = input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null;
+  const updated = await prisma.assessmentRunParticipant.update({
+    where: { id: participant.id },
+    data: {
+      externalAccessExpiresAt: expiresAt
+    },
+    include: {
+      user: { select: { id: true, displayName: true, username: true, email: true } },
+      externalContact: { select: { id: true, displayName: true, email: true, organization: true } },
+      emailDeliveries: { orderBy: { createdAt: "desc" }, take: 1 },
+      _count: { select: { responses: true } }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: updated.id,
+    action: "assessment_run_participant.external_link_expiry_updated",
+    summary: `${request.adminUser!.displayName} updated an external participant link expiry for ${updated.displayName}`,
+    metadata: { expiresAt }
+  });
+
+  response.json(serializeAssessmentRunParticipant(updated));
+});
+
+router.delete("/assessment-runs/:id/participants/:participantId", async (request, response) => {
+  const runId = String(request.params.id);
+  const participantId = String(request.params.participantId);
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to remove participants for this run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: participantId,
+      assessmentRunId: runId
+    },
+    include: {
+      _count: { select: { responses: true } }
+    }
+  });
+
+  if (!participant) {
+    return response.status(404).json({ message: "Participant not found" });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.SUBMITTED || participant._count.responses > 0) {
+    return response.status(400).json({ message: "Participants with saved or submitted responses cannot be removed." });
+  }
+
+  await prisma.assessmentRunParticipant.delete({
+    where: { id: participant.id }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: participant.id,
+    action: "assessment_run_participant.removed",
+    summary: `${request.adminUser!.displayName} removed participant ${participant.displayName}`
+  });
+
+  response.status(204).send();
+});
+
+router.post("/assessment-runs/:id/participants/:participantId/external-link/regenerate", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = participantLinkLifecycleSchema.parse(request.body ?? {});
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to manage participant links for this run" });
+  }
+
+  const expiresAt = input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null;
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: String(request.params.participantId),
+      assessmentRunId: runId,
+      externalContactId: { not: null }
+    },
+    select: { id: true }
+  });
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant not found." });
+  }
+
+  const updated = await prisma.assessmentRunParticipant.update({
+    where: { id: participant.id },
+    data: {
+      externalAccessToken: createShareToken(),
+      externalAccessExpiresAt: expiresAt,
+      externalAccessRevoked: false
+    },
+    include: {
+      user: { select: { id: true, displayName: true, username: true, email: true } },
+      externalContact: { select: { id: true, displayName: true, email: true, organization: true } },
+      emailDeliveries: { orderBy: { createdAt: "desc" }, take: 1 },
+      _count: { select: { responses: true } }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: updated.id,
+    action: "assessment_run_participant.external_link_regenerated",
+    summary: `${request.adminUser!.displayName} regenerated an external participant link for ${updated.displayName}`
+  });
+
+  response.json(serializeAssessmentRunParticipant(updated));
+});
+
+router.post("/assessment-runs/:id/participants/:participantId/external-link/revoke", async (request, response) => {
+  const runId = String(request.params.id);
+
+  if (!(await canManageAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have permission to manage participant links for this run" });
+  }
+
+  const participant = await prisma.assessmentRunParticipant.findFirst({
+    where: {
+      id: String(request.params.participantId),
+      assessmentRunId: runId,
+      externalContactId: { not: null }
+    },
+    select: { id: true }
+  });
+
+  if (!participant) {
+    return response.status(404).json({ message: "External participant not found." });
+  }
+
+  const updated = await prisma.assessmentRunParticipant.update({
+    where: { id: participant.id },
+    data: {
+      externalAccessRevoked: true
+    },
+    include: {
+      user: { select: { id: true, displayName: true, username: true, email: true } },
+      externalContact: { select: { id: true, displayName: true, email: true, organization: true } },
+      emailDeliveries: { orderBy: { createdAt: "desc" }, take: 1 },
+      _count: { select: { responses: true } }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: updated.id,
+    action: "assessment_run_participant.external_link_revoked",
+    summary: `${request.adminUser!.displayName} revoked an external participant link for ${updated.displayName}`
+  });
+
+  response.json(serializeAssessmentRunParticipant(updated));
+});
+
+router.get("/assessment-runs/:id/participant-me", async (request, response) => {
+  const runId = String(request.params.id);
+  const participant = await getInternalParticipantForUser(runId, request.adminUser!.id);
+
+  if (!participant) {
+    return response.status(403).json({ message: "You are not an individual participant for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    include: {
+      team: {
+        include: {
+          group: true
+        }
+      },
+      target: true,
+      ownerUser: true,
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: {
+                include: {
+                  levels: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.INVITED) {
+    await prisma.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        status: AssessmentParticipantStatus.NOT_STARTED
+      }
+    });
+    participant.status = AssessmentParticipantStatus.NOT_STARTED;
+  }
+
+  response.json(serializeParticipantAssessmentRun(run, participant));
+});
+
+router.put("/assessment-runs/:id/participant-me/responses", async (request, response) => {
+  const input = responseSchema.parse(request.body);
+  const runId = String(request.params.id);
+  const participant = await getInternalParticipantForUser(runId, request.adminUser!.id);
+
+  if (!participant) {
+    return response.status(403).json({ message: "You are not an individual participant for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      title: true,
+      status: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment is no longer accepting participant responses." });
+  }
+
+  if (participant.status === AssessmentParticipantStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Your individual response has already been submitted." });
+  }
+
+  await prisma.$transaction(async (transaction) => {
+    await Promise.all(
+      input.responses.map((item) =>
+        transaction.participantAssessmentResponse.upsert({
+          where: {
+            participantId_questionId: {
+              participantId: participant.id,
+              questionId: item.questionId
+            }
+          },
+          update: {
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: item.comment ?? null
+          },
+          create: {
+            participantId: participant.id,
+            questionId: item.questionId,
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: item.comment ?? null
+          }
+        })
+      )
+    );
+
+    await transaction.assessmentRunParticipant.update({
+      where: { id: participant.id },
+      data: {
+        status: AssessmentParticipantStatus.IN_PROGRESS,
+        startedAt: participant.startedAt ?? new Date()
+      }
+    });
+
+    if (run.status === AssessmentRunStatus.DRAFT && input.responses.length > 0) {
+      await transaction.assessmentRun.update({
+        where: { id: runId },
+        data: {
+          status: AssessmentRunStatus.IN_PROGRESS
+        }
+      });
+    }
+  });
+
+  response.json({ ok: true });
+});
+
+router.post("/assessment-runs/:id/participant-me/submit", async (request, response) => {
+  const runId = String(request.params.id);
+  const participant = await getInternalParticipantForUser(runId, request.adminUser!.id);
+
+  if (!participant) {
+    return response.status(403).json({ message: "You are not an individual participant for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    include: {
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED || run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "This assessment is no longer accepting participant responses." });
+  }
+
+  const requiredQuestionIds = run.templateVersion.domains.flatMap((domain) => domain.questions.map((question) => question.id));
+  const answeredQuestionIds = new Set(participant.responses.map((item) => item.questionId));
+  const missingCount = requiredQuestionIds.filter((questionId) => !answeredQuestionIds.has(questionId)).length;
+
+  if (missingCount > 0) {
+    return response.status(400).json({ message: `Answer all required questions before submitting. ${missingCount} unanswered.` });
+  }
+
+  const updated = await prisma.assessmentRunParticipant.update({
+    where: { id: participant.id },
+    data: {
+      status: AssessmentParticipantStatus.SUBMITTED,
+      submittedAt: new Date(),
+      startedAt: participant.startedAt ?? new Date()
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run_participant",
+    entityId: participant.id,
+    action: "assessment_run_participant.submitted",
+    summary: `${request.adminUser!.displayName} submitted an individual response for ${run.title}`
+  });
+
+  response.json(serializeAssessmentRunParticipant({ ...updated, user: null, externalContact: null, _count: { responses: participant.responses.length } }));
 });
 
 router.put("/assessment-runs/:id", async (request, response) => {
@@ -4233,6 +6698,277 @@ router.put("/assessment-runs/:id/responses", async (request, response) => {
   response.json({ ok: true });
 });
 
+router.post("/assessment-runs/:id/aggregate-participant-responses", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to aggregate responses for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    include: {
+      participants: {
+        include: {
+          responses: true
+        }
+      },
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: {
+                include: {
+                  levels: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.responseMode !== AssessmentResponseMode.INDIVIDUAL_AGGREGATED) {
+    return response.status(400).json({ message: "Only individual team-member runs can be aggregated." });
+  }
+
+  if (run.status === AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "This run is already submitted." });
+  }
+
+  if (run.status === AssessmentRunStatus.ARCHIVED) {
+    return response.status(400).json({ message: "Archived runs cannot be aggregated." });
+  }
+
+  if (run.participants.length === 0) {
+    return response.status(400).json({ message: "Add participants before aggregating responses." });
+  }
+
+  const submittedParticipants = run.participants.filter((participant) => participant.status === AssessmentParticipantStatus.SUBMITTED);
+  const requiredSubmittedParticipants = run.minimumParticipantResponses
+    ? Math.min(run.minimumParticipantResponses, run.participants.length)
+    : run.participants.length;
+
+  if (submittedParticipants.length < requiredSubmittedParticipants) {
+    return response.status(400).json({
+      message: `Not enough participant submissions yet. ${submittedParticipants.length}/${requiredSubmittedParticipants} submitted.`
+    });
+  }
+
+  const questions = run.templateVersion.domains.flatMap((domain) => domain.questions);
+  const aggregatedResponses = questions.map((question) => {
+    const responsesForQuestion = submittedParticipants.flatMap((participant) =>
+      participant.responses.filter((participantResponse) => participantResponse.questionId === question.id)
+    );
+
+    if (responsesForQuestion.length < requiredSubmittedParticipants) {
+      return null;
+    }
+
+    const averageScore = responsesForQuestion.reduce((sum, item) => sum + item.selectedValue, 0) / responsesForQuestion.length;
+    const levels = [...question.levels].sort((a, b) => a.value - b.value);
+    const nearestLevel =
+      levels.reduce((nearest, level) =>
+        Math.abs(level.value - averageScore) < Math.abs(nearest.value - averageScore) ? level : nearest
+      , levels[0]) ?? {
+        value: Math.round(averageScore),
+        label: `Level ${Math.round(averageScore)}`
+      };
+
+    return {
+      questionId: question.id,
+      selectedValue: nearestLevel.value,
+      selectedLabel: nearestLevel.label,
+      averageScore,
+      participantCount: responsesForQuestion.length
+    };
+  });
+
+  const missingQuestionCount = aggregatedResponses.filter((item) => !item).length;
+  if (missingQuestionCount > 0) {
+    return response.status(400).json({
+      message: `${missingQuestionCount} questions do not have enough submitted participant responses yet.`
+    });
+  }
+
+  const completeAggregatedResponses = aggregatedResponses.filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const overallScore = completeAggregatedResponses.length
+    ? Number(
+        (
+          completeAggregatedResponses.reduce((sum, item) => sum + item.averageScore, 0) / completeAggregatedResponses.length
+        ).toFixed(2)
+      )
+    : null;
+
+  const updated = await prisma.$transaction(async (transaction) => {
+    await Promise.all(
+      completeAggregatedResponses.map((item) =>
+        transaction.assessmentResponse.upsert({
+          where: {
+            assessmentRunId_questionId: {
+              assessmentRunId: runId,
+              questionId: item.questionId
+            }
+          },
+          update: {
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: `Aggregated from ${item.participantCount} submitted participant responses. Average score: ${item.averageScore.toFixed(2)}.`
+          },
+          create: {
+            assessmentRunId: runId,
+            questionId: item.questionId,
+            selectedValue: item.selectedValue,
+            selectedLabel: item.selectedLabel,
+            comment: `Aggregated from ${item.participantCount} submitted participant responses. Average score: ${item.averageScore.toFixed(2)}.`
+          }
+        })
+      )
+    );
+
+    return transaction.assessmentRun.update({
+      where: { id: runId },
+      data: {
+        status: AssessmentRunStatus.SUBMITTED,
+        submittedAt: new Date(),
+        overallScore,
+        submissionSummary: `Aggregated from ${submittedParticipants.length} submitted individual participant responses.`
+      }
+    });
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "assessment_run",
+    entityId: runId,
+    action: "assessment_run.participant_responses_aggregated",
+    summary: `${user.displayName} aggregated individual participant responses for ${updated.title}`,
+    metadata: {
+      submittedParticipants: submittedParticipants.length,
+      requiredSubmittedParticipants,
+      questionCount: completeAggregatedResponses.length,
+      overallScore
+    }
+  });
+
+  if (updated.ownerUserId && updated.ownerUserId !== user.id) {
+    await createRunNotification({
+      runId,
+      userId: updated.ownerUserId,
+      type: "RUN_SUBMITTED",
+      title: "Assessment submitted",
+      message: `${updated.title} has been aggregated and submitted.`
+    });
+  }
+
+  response.json({
+    ...updated,
+    aggregatedQuestions: completeAggregatedResponses.length,
+    submittedParticipants: submittedParticipants.length,
+    requiredSubmittedParticipants
+  });
+});
+
+router.post("/assessment-runs/:id/participant-aggregation-insight", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to review participant aggregation insight for this run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    include: {
+      participants: {
+        include: {
+          responses: true
+        }
+      },
+      templateVersion: {
+        include: {
+          domains: {
+            include: {
+              questions: true
+            }
+          }
+        }
+      },
+      team: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.responseMode !== AssessmentResponseMode.INDIVIDUAL_AGGREGATED) {
+    return response.status(400).json({ message: "Aggregation insight is only available for individual response runs." });
+  }
+
+  const submittedParticipants = run.participants.filter((participant) => participant.status === AssessmentParticipantStatus.SUBMITTED);
+  if (!submittedParticipants.length) {
+    return response.status(400).json({ message: "At least one submitted participant response is required for aggregation insight." });
+  }
+
+  const questions = run.templateVersion.domains.flatMap((domain) =>
+    domain.questions.map((question) => ({
+      domainTitle: domain.title,
+      prompt: question.prompt,
+      responses: submittedParticipants.flatMap((participant) =>
+        participant.responses
+          .filter((participantResponse) => participantResponse.questionId === question.id)
+          .map((participantResponse) => ({
+            participantName: participant.displayName,
+            selectedValue: participantResponse.selectedValue,
+            selectedLabel: participantResponse.selectedLabel,
+            comment: participantResponse.comment
+          }))
+      )
+    }))
+  );
+
+  const requiredSubmissions = run.minimumParticipantResponses
+    ? Math.min(run.minimumParticipantResponses, run.participants.length)
+    : run.participants.length;
+
+  const insight = await generateAggregationInsight({
+    title: run.title,
+    teamName: run.team.name,
+    periodLabel: run.periodLabel,
+    requiredSubmissions,
+    participants: run.participants.map((participant) => ({
+      displayName: participant.displayName,
+      status: participant.status,
+      responseCount: participant.responses.length
+    })),
+    questions
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "ai_summary",
+    entityId: runId,
+    action: "assessment_run.ai_aggregation_insight_generated",
+    summary: `${user.displayName} generated AI aggregation insight for ${run.title}`,
+    metadata: {
+      submittedParticipants: submittedParticipants.length,
+      requiredSubmissions,
+      disagreementLevel: insight.disagreementLevel
+    }
+  });
+
+  response.json(insight);
+});
+
 router.post("/assessment-runs/:id/submit", async (request, response) => {
   const input = submitAssessmentSchema.parse(request.body ?? {});
   const runId = String(request.params.id);
@@ -4287,6 +7023,86 @@ router.post("/assessment-runs/:id/submit", async (request, response) => {
   }
 
   response.json(updated);
+});
+
+router.post("/assessment-runs/:id/copy", async (request, response) => {
+  const sourceRunId = String(request.params.id);
+  if (!(await canManageAssessmentRun(request.adminUser!, sourceRunId))) {
+    return response.status(403).json({ message: "You do not have permission to copy this run" });
+  }
+
+  const sourceRun = await prisma.assessmentRun.findUnique({
+    where: { id: sourceRunId },
+    include: {
+      participants: true
+    }
+  });
+
+  if (!sourceRun) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  const copiedRun = await prisma.$transaction(async (transaction) => {
+    const created = await transaction.assessmentRun.create({
+      data: {
+        templateId: sourceRun.templateId,
+        templateVersionId: sourceRun.templateVersionId,
+        teamId: sourceRun.teamId,
+        targetId: sourceRun.targetId,
+        responseMode: sourceRun.responseMode,
+        participantVisibility: sourceRun.participantVisibility,
+        minimumParticipantResponses: sourceRun.minimumParticipantResponses,
+        ownerUserId: sourceRun.ownerUserId,
+        ownerName: sourceRun.ownerName,
+        title: `Copy of ${sourceRun.title}`,
+        dueDate: sourceRun.dueDate,
+        periodType: sourceRun.periodType,
+        periodLabel: sourceRun.periodLabel,
+        periodBucket: sourceRun.periodBucket,
+        periodSortDate: sourceRun.periodSortDate,
+        year: sourceRun.year,
+        quarter: sourceRun.quarter,
+        startDate: sourceRun.startDate,
+        endDate: sourceRun.endDate,
+        referenceDate: sourceRun.referenceDate,
+        status: AssessmentRunStatus.DRAFT,
+        guestParticipationEnabled: sourceRun.guestParticipationEnabled,
+        guestResultsVisible: sourceRun.guestResultsVisible
+      }
+    });
+
+    for (const participant of sourceRun.participants) {
+      await transaction.assessmentRunParticipant.create({
+        data: {
+          assessmentRunId: created.id,
+          userId: participant.userId,
+          externalContactId: participant.externalContactId,
+          externalAccessToken: participant.externalContactId ? createShareToken() : null,
+          externalAccessExpiresAt: participant.externalAccessExpiresAt,
+          externalAccessRevoked: false,
+          displayName: participant.displayName,
+          email: participant.email,
+          status: AssessmentParticipantStatus.INVITED
+        }
+      });
+    }
+
+    return created;
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: copiedRun.id,
+    entityType: "assessment_run",
+    entityId: copiedRun.id,
+    action: "assessment_run.copied",
+    summary: `${request.adminUser!.displayName} copied assessment run ${sourceRun.title}`,
+    metadata: {
+      sourceRunId
+    }
+  });
+
+  response.status(201).json(copiedRun);
 });
 
 router.post("/assessment-runs/:id/archive", async (request, response) => {
@@ -4379,7 +7195,7 @@ router.delete("/assessment-runs/:id", async (request, response) => {
     return response.status(404).json({ message: "Assessment run not found" });
   }
 
-  if (run.status === AssessmentRunStatus.SUBMITTED && request.adminUser!.role !== UserRole.ADMIN) {
+  if (run.status === AssessmentRunStatus.SUBMITTED) {
     return response.status(400).json({ message: "Submitted runs cannot be deleted." });
   }
 
@@ -4486,6 +7302,174 @@ router.post("/assessment-runs/:id/ai-ask", async (request, response) => {
   });
 
   response.json(answer);
+});
+
+router.get("/assessment-runs/:id/action-items", async (request, response) => {
+  const runId = String(request.params.id);
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const items = await prisma.assessmentActionItem.findMany({
+    where: { assessmentRunId: runId },
+    include: {
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      }
+    },
+    orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }]
+  });
+
+  response.json(items.map(serializeActionItem));
+});
+
+router.post("/assessment-runs/:id/action-items", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = actionItemSchema.parse(request.body ?? {});
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const run = await prisma.assessmentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      title: true,
+      status: true
+    }
+  });
+
+  if (!run) {
+    return response.status(404).json({ message: "Assessment run not found" });
+  }
+
+  if (run.status !== AssessmentRunStatus.SUBMITTED) {
+    return response.status(400).json({ message: "Action items can only be created for submitted assessment results." });
+  }
+
+  const created = await prisma.assessmentActionItem.create({
+    data: {
+      assessmentRunId: runId,
+      title: input.title,
+      description: input.description?.trim() || null,
+      domainTitle: input.domainTitle?.trim() || null,
+      ownerName: input.ownerName?.trim() || null,
+      dueDate: input.dueDate ? new Date(input.dueDate) : null,
+      status: input.status ?? "OPEN",
+      createdByUserId: request.adminUser!.id
+    },
+    include: {
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_action_item",
+    entityId: created.id,
+    action: "assessment_action_item.created",
+    summary: `${request.adminUser!.displayName} created action item ${created.title} for ${run.title}`
+  });
+
+  response.status(201).json(serializeActionItem(created));
+});
+
+router.put("/assessment-runs/:id/action-items/:actionItemId", async (request, response) => {
+  const runId = String(request.params.id);
+  const input = actionItemSchema.parse(request.body ?? {});
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const existing = await prisma.assessmentActionItem.findFirst({
+    where: {
+      id: String(request.params.actionItemId),
+      assessmentRunId: runId
+    }
+  });
+
+  if (!existing) {
+    return response.status(404).json({ message: "Action item not found" });
+  }
+
+  const updated = await prisma.assessmentActionItem.update({
+    where: { id: existing.id },
+    data: {
+      title: input.title,
+      description: input.description?.trim() || null,
+      domainTitle: input.domainTitle?.trim() || null,
+      ownerName: input.ownerName?.trim() || null,
+      dueDate: input.dueDate ? new Date(input.dueDate) : null,
+      status: input.status ?? existing.status
+    },
+    include: {
+      createdByUser: {
+        select: {
+          id: true,
+          displayName: true,
+          username: true
+        }
+      }
+    }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_action_item",
+    entityId: updated.id,
+    action: "assessment_action_item.updated",
+    summary: `${request.adminUser!.displayName} updated action item ${updated.title}`
+  });
+
+  response.json(serializeActionItem(updated));
+});
+
+router.delete("/assessment-runs/:id/action-items/:actionItemId", async (request, response) => {
+  const runId = String(request.params.id);
+
+  if (!(await canAccessAssessmentRun(request.adminUser!, runId))) {
+    return response.status(403).json({ message: "You do not have access to this assessment run" });
+  }
+
+  const existing = await prisma.assessmentActionItem.findFirst({
+    where: {
+      id: String(request.params.actionItemId),
+      assessmentRunId: runId
+    }
+  });
+
+  if (!existing) {
+    return response.status(404).json({ message: "Action item not found" });
+  }
+
+  await prisma.assessmentActionItem.delete({
+    where: { id: existing.id }
+  });
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId,
+    entityType: "assessment_action_item",
+    entityId: existing.id,
+    action: "assessment_action_item.deleted",
+    summary: `${request.adminUser!.displayName} deleted action item ${existing.title}`
+  });
+
+  response.status(204).send();
 });
 
 router.get("/assessment-runs/:id/share-links", async (request, response) => {
@@ -4637,11 +7621,24 @@ router.post("/assessment-runs/:id/guest-links", async (request, response) => {
     return response.status(400).json({ message: "Guest links can only be created for active assessments" });
   }
 
+  const externalContact = input.externalContactId
+    ? await prisma.externalContact.findUnique({
+        where: { id: input.externalContactId }
+      })
+    : null;
+
+  if (input.externalContactId && !externalContact) {
+    return response.status(404).json({ message: "External contact not found" });
+  }
+
   const created = await prisma.guestAssessmentLink.create({
     data: {
       assessmentRunId: runId,
       createdByUserId: request.adminUser!.id,
-      inviteLabel: input.inviteLabel?.trim() || null,
+      externalContactId: externalContact?.id ?? null,
+      inviteLabel: input.inviteLabel?.trim() || externalContact?.organization || externalContact?.displayName || null,
+      guestDisplayName: externalContact?.displayName ?? null,
+      guestEmail: externalContact?.email ?? null,
       token: createShareToken(),
       expiresAt: input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null
     }
@@ -4656,6 +7653,7 @@ router.post("/assessment-runs/:id/guest-links", async (request, response) => {
     summary: `${request.adminUser!.displayName} created a guest assessment link for ${run.title}`,
     metadata: {
       inviteLabel: created.inviteLabel,
+      externalContactId: created.externalContactId,
       expiresAt: created.expiresAt
     }
   });
@@ -4697,6 +7695,74 @@ router.post("/assessment-runs/:id/guest-links/:guestLinkId/revoke", async (reque
   });
 
   response.json(serializeGuestAssessmentLink(revoked));
+});
+
+router.post("/assessment-runs/:id/guest-links/:guestLinkId/send-invite-email", async (request, response) => {
+  const runId = String(request.params.id);
+  const user = request.adminUser!;
+
+  if (!(await canManageAssessmentRun(user, runId))) {
+    return response.status(403).json({ message: "You do not have permission to email guest links for this assessment" });
+  }
+
+  const link = await prisma.guestAssessmentLink.findFirst({
+    where: {
+      id: String(request.params.guestLinkId),
+      assessmentRunId: runId
+    },
+    include: {
+      assessmentRun: {
+        include: {
+          team: true,
+          templateVersion: true
+        }
+      },
+      externalContact: true
+    }
+  });
+
+  if (!link || link.isRevoked || link.submittedAt) {
+    return response.status(404).json({ message: "Active guest link not found" });
+  }
+
+  const recipientEmail = link.guestEmail || link.externalContact?.email;
+  if (!recipientEmail) {
+    return response.status(400).json({ message: "This guest link does not have an email address." });
+  }
+
+  const guestUrl = buildApplicationUrl(`/guest-assessments/${link.token}`);
+  await sendTrackedEmail({
+    type: "guest_invite",
+    to: recipientEmail,
+    recipientName: link.guestDisplayName || link.externalContact?.displayName || null,
+    subject: `Guest assessment invitation: ${link.assessmentRun.title}`,
+    body: [
+      `Hello ${link.guestDisplayName || link.externalContact?.displayName || "Guest"},`,
+      "",
+      `${user.displayName} invited you to participate in an assessment.`,
+      "",
+      `Assessment: ${link.assessmentRun.title}`,
+      `Team: ${link.assessmentRun.team.name}`,
+      `Template: ${link.assessmentRun.templateVersion.name} v${link.assessmentRun.templateVersion.versionNumber}`,
+      link.expiresAt ? `Expires: ${link.expiresAt.toISOString()}` : "Expires: no expiry configured",
+      "",
+      `Open guest assessment: ${guestUrl}`
+    ].join("\n"),
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    guestLinkId: link.id
+  });
+
+  await logAudit({
+    actorUserId: user.id,
+    assessmentRunId: runId,
+    entityType: "guest_assessment_link",
+    entityId: link.id,
+    action: "assessment_run.guest_invite_email_sent",
+    summary: `${user.displayName} sent a guest assessment invite email`
+  });
+
+  response.json({ ok: true });
 });
 
 router.post("/assessment-runs/:id/share-links", async (request, response) => {
@@ -4783,10 +7849,11 @@ router.post("/assessment-runs/:id/send-report-email", async (request, response) 
   const token = createShareToken();
   const expiresAt = input.expiresInDays ? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000) : null;
   const shareUrl = buildShareUrl(token);
-  const recipientLabel = input.recipientName?.trim() ? `${input.recipientName.trim()} <${input.recipientEmail}>` : input.recipientEmail;
 
-  await sendReportEmail({
-    to: recipientLabel,
+  await sendTrackedEmail({
+    type: "submitted_report",
+    to: input.recipientEmail,
+    recipientName: input.recipientName?.trim() || null,
     subject: `Submitted assessment report: ${run.title}`,
     body: buildReportEmailBody({
       runTitle: run.title,
@@ -4798,7 +7865,9 @@ router.post("/assessment-runs/:id/send-report-email", async (request, response) 
       shareUrl,
       note: input.note?.trim() || "",
       expiresAt
-    })
+    }),
+    actorUserId: request.adminUser!.id,
+    assessmentRunId: runId
   });
 
   const created = await prisma.reportShareLink.create({
@@ -5169,6 +8238,26 @@ router.post("/templates/ai/full-draft", requireRole(UserRole.ADMIN, UserRole.TEM
     metadata: {
       category: input.category,
       domainCount: result.domains.length
+    }
+  });
+
+  response.json(result);
+});
+
+router.post("/templates/ai/chat-draft", requireRole(UserRole.ADMIN, UserRole.TEMPLATE_MANAGER), async (request, response) => {
+  const input = templateAiChatDraftSchema.parse(request.body ?? {});
+  const result = await generateChatTemplateDraft(input);
+
+  await logAudit({
+    actorUserId: request.adminUser!.id,
+    entityType: "ai_summary",
+    entityId: "template-chat-draft",
+    action: "templates.ai_chat_draft_generated",
+    summary: `${request.adminUser!.displayName} used AI chat-based template creation`,
+    metadata: {
+      category: input.category,
+      status: result.status,
+      domainCount: result.draft?.domains.length ?? 0
     }
   });
 

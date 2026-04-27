@@ -248,6 +248,41 @@ export function ReportsPage() {
     };
   }, [filteredLatestRows]);
 
+  const groupSummaryRows = useMemo(() => {
+    const buckets = new Map<string, { groupName: string; teamNames: Set<string>; total: number; count: number; submittedAt: string | null }>();
+
+    for (const item of filteredLatestRows) {
+      const key = item.teamGroupId ?? "ungrouped";
+      const current = buckets.get(key) ?? {
+        groupName: item.teamGroupName ?? "Ungrouped",
+        teamNames: new Set<string>(),
+        total: 0,
+        count: 0,
+        submittedAt: null
+      };
+      current.teamNames.add(item.teamName);
+      if (typeof item.overallScore === "number") {
+        current.total += item.overallScore;
+        current.count += 1;
+      }
+      if (item.submittedAt && (!current.submittedAt || new Date(item.submittedAt) > new Date(current.submittedAt))) {
+        current.submittedAt = item.submittedAt;
+      }
+      buckets.set(key, current);
+    }
+
+    return [...buckets.entries()]
+      .map(([groupId, group]) => ({
+        groupId,
+        groupName: group.groupName,
+        teamCount: group.teamNames.size,
+        rowCount: group.count,
+        averageScore: group.count ? Number((group.total / group.count).toFixed(2)) : null,
+        latestSubmittedAt: group.submittedAt
+      }))
+      .sort((a, b) => (b.averageScore ?? 0) - (a.averageScore ?? 0));
+  }, [filteredLatestRows]);
+
   const filteredDomainSnapshot = useMemo(() => {
     const buckets = new Map<string, { title: string; total: number; count: number; teamCount: number }>();
 
@@ -626,6 +661,45 @@ export function ReportsPage() {
             </div>
           </div>
           <div className="rounded-[1.1rem] border bg-muted/60 px-4 py-3 text-sm text-muted-foreground">{selectionText}</div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Group-level snapshot</CardTitle>
+          <CardDescription>Summarizes the current filtered reporting lens by team group for department, region, or program-level review.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {groupSummaryRows.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Group</TableHead>
+                  <TableHead>Teams</TableHead>
+                  <TableHead>Rows</TableHead>
+                  <TableHead>Average score</TableHead>
+                  <TableHead>Latest submitted</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {groupSummaryRows.map((group) => (
+                  <TableRow key={group.groupId}>
+                    <TableCell className="font-medium">{group.groupName}</TableCell>
+                    <TableCell>{group.teamCount}</TableCell>
+                    <TableCell>{group.rowCount}</TableCell>
+                    <TableCell>
+                      <Badge variant={badgeTone(group.averageScore)}>{group.averageScore != null ? group.averageScore.toFixed(2) : "-"}</Badge>
+                    </TableCell>
+                    <TableCell>{formatDate(group.latestSubmittedAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="rounded-[1.25rem] border border-dashed px-4 py-8 text-sm text-muted-foreground">
+              No group-level rows are available for the current filters.
+            </div>
+          )}
         </CardContent>
       </Card>
 

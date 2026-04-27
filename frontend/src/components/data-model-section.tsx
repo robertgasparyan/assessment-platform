@@ -30,7 +30,7 @@ const entityGroups: EntityGroup[] = [
         description: "Platform account, role, login session, invitation, and ownership anchor.",
         role: "Core identity",
         keys: ["id (PK)", "username", "role", "sessionToken", "inviteToken"],
-        relationships: ["1 User -> many UserTeamMembership", "1 User -> many AssessmentRun (owner)", "1 User -> many ReportShareLink"],
+        relationships: ["1 User -> many UserTeamMembership", "1 User -> many AssessmentRun (owner)", "1 User -> many ReportShareLink", "1 User -> many EmailDeliveryLog"],
         tone: "green"
       },
       {
@@ -181,6 +181,14 @@ const entityGroups: EntityGroup[] = [
         keys: ["id (PK)", "token", "assessmentRunId (FK)", "createdByUserId (FK)"],
         relationships: ["many share links -> 1 AssessmentRun", "many share links -> 1 User"],
         tone: "green"
+      },
+      {
+        name: "EmailDeliveryLog",
+        description: "Delivery attempt history for participant invites, guest invites, and submitted-report emails.",
+        role: "Delivery history",
+        keys: ["id (PK)", "type", "status", "recipientEmail", "assessmentRunId (FK)"],
+        relationships: ["many deliveries -> 1 AssessmentRun", "many deliveries -> 1 User", "optional links to GuestAssessmentLink or AssessmentRunParticipant"],
+        tone: "amber"
       },
       {
         name: "AuditLog",

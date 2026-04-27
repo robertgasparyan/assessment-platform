@@ -78,6 +78,15 @@ type FullTemplateInput = {
   scoringLabels: string[];
 };
 
+type ChatTemplateInput = {
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }>;
+  category: string;
+  scoringLabels: string[];
+};
+
 type SingleDomainQuestionInput = {
   templateName: string;
   templateDescription: string;
@@ -107,9 +116,14 @@ type DomainAssistOutput = {
 
 type ConsistencyReviewOutput = {
   summary: string;
+  readinessScore: number;
+  riskLevel: "low" | "medium" | "high";
   strengths: string[];
   issues: string[];
   suggestions: string[];
+  publishBlockers: string[];
+  domainBalanceNotes: string[];
+  maturityScaleNotes: string[];
 };
 
 type TemplateScaffoldOutput = {
@@ -163,6 +177,13 @@ type FullTemplateOutput = {
     }>;
   }>;
   buildNotes: string[];
+};
+
+type ChatTemplateOutput = {
+  status: "needs_clarification" | "draft_ready";
+  assistantMessage: string;
+  clarifyingQuestions: string[];
+  draft?: FullTemplateOutput;
 };
 
 function slugify(value: string) {
@@ -416,6 +437,78 @@ Input:
   };
 }
 
+export async function generateChatTemplateDraft(input: ChatTemplateInput) {
+  const conversation = input.messages
+    .slice(-12)
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content}`)
+    .join("\n");
+
+  const output = await generateAssessmentAiJson<ChatTemplateOutput>(`You are helping a template manager create an assessment template through chat.
+
+Return only valid JSON with this exact shape:
+{
+  "status": "needs_clarification" | "draft_ready",
+  "assistantMessage": "string",
+  "clarifyingQuestions": ["string"],
+  "draft": {
+    "name": "string",
+    "slug": "string",
+    "description": "string",
+    "category": "string",
+    "scoringLabels": ["string", "string", "string"],
+    "domains": [
+      {
+        "title": "string",
+        "description": "string",
+        "questions": [
+          {
+            "prompt": "string",
+            "guidance": "string",
+            "levels": [{"value": 1, "label": "string", "description": "string"}]
+          }
+        ]
+      }
+    ],
+    "buildNotes": ["string", "string", "string"]
+  }
+}
+
+Rules:
+- If the user has not provided enough information, return status "needs_clarification" and ask 1 to 3 concise clarifying questions.
+- Ask about purpose, audience, scope, domains, and assessment depth only when missing.
+- If enough information exists, return status "draft_ready" with a complete first-pass draft.
+- Drafts must be suitable for manual refinement by a human author.
+- Return 4 to 7 domains and 4 to 7 questions per domain.
+- Keep the same number of maturity levels and the same level labels.
+- Level descriptions should show clear progression.
+- Do not publish, approve, or claim governance completion.
+- Build notes should explain what the author should review next.
+
+Preferred category: ${input.category || "none"}
+Scoring labels: ${input.scoringLabels.join(", ")}
+
+Conversation:
+${conversation || "No conversation yet."}`);
+
+  return {
+    status: output.status,
+    assistantMessage: output.assistantMessage,
+    clarifyingQuestions: output.clarifyingQuestions ?? [],
+    draft: output.draft
+      ? {
+          name: output.draft.name,
+          slug: output.draft.slug || slugify(output.draft.name),
+          description: output.draft.description,
+          category: output.draft.category || input.category,
+          scoringLabels: output.draft.scoringLabels?.length ? output.draft.scoringLabels : input.scoringLabels,
+          domains: output.draft.domains ?? [],
+          buildNotes: output.draft.buildNotes ?? []
+        }
+      : null,
+    providerLabel: output.visibleProviderLabel
+  };
+}
+
 export async function generateQuestionAssist(input: QuestionAssistInput) {
   const output = await generateAssessmentAiJson<QuestionAssistOutput>(`You are assisting an assessment template author.
 
@@ -509,9 +602,14 @@ ${domain.questions
 Return only valid JSON with this exact shape:
 {
   "summary": "string",
+  "readinessScore": 0,
+  "riskLevel": "low" | "medium" | "high",
   "strengths": ["string", "string", "string"],
   "issues": ["string", "string", "string"],
-  "suggestions": ["string", "string", "string"]
+  "suggestions": ["string", "string", "string"],
+  "publishBlockers": ["string"],
+  "domainBalanceNotes": ["string"],
+  "maturityScaleNotes": ["string"]
 }
 
 Rules:
@@ -519,6 +617,9 @@ Rules:
 - Focus on structure, clarity, level progression, overlap, and wording consistency.
 - Do not invent governance workflows or publishing steps.
 - Keep suggestions practical and manual-review oriented.
+- readinessScore must be an integer from 0 to 100.
+- riskLevel should be high when there are material blockers, medium when there are quality concerns, and low when mostly ready.
+- publishBlockers should include only issues that should be fixed before publish.
 
 Template context:
 - name: ${input.templateName || "Untitled template"}
@@ -531,9 +632,14 @@ ${domainBlock || "- none"}`);
 
   return {
     summary: output.summary,
+    readinessScore: Number.isFinite(output.readinessScore) ? Math.max(0, Math.min(100, Math.round(output.readinessScore))) : 0,
+    riskLevel: output.riskLevel ?? "medium",
     strengths: output.strengths ?? [],
     issues: output.issues ?? [],
     suggestions: output.suggestions ?? [],
+    publishBlockers: output.publishBlockers ?? [],
+    domainBalanceNotes: output.domainBalanceNotes ?? [],
+    maturityScaleNotes: output.maturityScaleNotes ?? [],
     providerLabel: output.visibleProviderLabel
   };
 }

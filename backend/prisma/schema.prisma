@@ -20,6 +20,32 @@ enum AssessmentPeriodType {
   POINT_IN_TIME
 }
 
+enum AssessmentTargetType {
+  TEAM
+  TEAM_GROUP
+  INTERNAL_USER
+  EXTERNAL_CONTACT
+  STANDALONE
+}
+
+enum AssessmentResponseMode {
+  SHARED
+  INDIVIDUAL_AGGREGATED
+  INDIVIDUAL
+}
+
+enum AssessmentParticipantStatus {
+  INVITED
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+}
+
+enum AssessmentParticipantVisibility {
+  ANONYMOUS_AGGREGATED
+  NAMED
+}
+
 enum UserRole {
   ADMIN
   TEMPLATE_MANAGER
@@ -31,6 +57,12 @@ enum UserRole {
 enum TeamMembershipRole {
   LEAD
   MEMBER
+}
+
+enum EmailDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
 }
 
 model User {
@@ -51,11 +83,16 @@ model User {
   updatedAt        DateTime             @updatedAt
   teamMemberships     UserTeamMembership[]
   ownedRuns           AssessmentRun[]           @relation("AssessmentRunOwner")
+  assessmentTargets   AssessmentTarget[]
+  assessmentParticipants AssessmentRunParticipant[]
   assignmentChanges   AssessmentRunAssignment[] @relation("AssessmentRunAssignedByUser")
   assignmentFromEvents AssessmentRunAssignment[] @relation("AssessmentRunFromUser")
   assignmentToEvents   AssessmentRunAssignment[] @relation("AssessmentRunToUser")
   createdShareLinks    ReportShareLink[]
   createdGuestAssessmentLinks GuestAssessmentLink[]
+  externalContacts     ExternalContact[]
+  emailDeliveries      EmailDeliveryLog[]
+  createdActionItems   AssessmentActionItem[]
   auditLogs            AuditLog[]
   notifications        Notification[]
 }
@@ -87,6 +124,7 @@ model TeamGroup {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   teams       Team[]
+  assessmentTargets AssessmentTarget[]
 }
 
 model Team {
@@ -98,7 +136,42 @@ model Team {
   updatedAt      DateTime        @updatedAt
   group          TeamGroup?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
   assessmentRuns AssessmentRun[]
+  assessmentTargets AssessmentTarget[]
   memberships    UserTeamMembership[]
+}
+
+model ExternalContact {
+  id          String   @id @default(cuid())
+  displayName String
+  email       String?
+  organization String?
+  notes       String?
+  createdByUserId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  assessmentTargets AssessmentTarget[]
+  assessmentParticipants AssessmentRunParticipant[]
+  guestAssessmentLinks GuestAssessmentLink[]
+}
+
+model AssessmentTarget {
+  id                String               @id @default(cuid())
+  type              AssessmentTargetType
+  displayName       String
+  teamId            String?              @unique
+  teamGroupId       String?              @unique
+  userId            String?              @unique
+  externalContactId String?              @unique
+  standaloneName    String?
+  standaloneEmail   String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  team              Team?                @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamGroup         TeamGroup?           @relation(fields: [teamGroupId], references: [id], onDelete: Cascade)
+  user              User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  externalContact   ExternalContact?     @relation(fields: [externalContactId], references: [id], onDelete: Cascade)
+  assessmentRuns    AssessmentRun[]
 }
 
 model Category {
@@ -189,6 +262,7 @@ model TemplateQuestion {
   templateDomain TemplateDomain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
   levels         QuestionLevel[]
   responses      AssessmentResponse[]
+  participantResponses ParticipantAssessmentResponse[]
 }
 
 model QuestionLevel {
@@ -206,6 +280,10 @@ model AssessmentRun {
   templateId        String
   templateVersionId String
   teamId            String
+  targetId          String?
+  responseMode      AssessmentResponseMode @default(SHARED)
+  participantVisibility AssessmentParticipantVisibility @default(ANONYMOUS_AGGREGATED)
+  minimumParticipantResponses Int?
   ownerUserId       String?
   title             String
   ownerName         String?
@@ -230,11 +308,15 @@ model AssessmentRun {
   template          AssessmentTemplate  @relation(fields: [templateId], references: [id])
   templateVersion   TemplateVersion     @relation(fields: [templateVersionId], references: [id])
   team              Team                @relation(fields: [teamId], references: [id])
+  target            AssessmentTarget?    @relation(fields: [targetId], references: [id], onDelete: SetNull)
   ownerUser         User?               @relation("AssessmentRunOwner", fields: [ownerUserId], references: [id])
   responses         AssessmentResponse[]
+  participants      AssessmentRunParticipant[]
   assignmentHistory AssessmentRunAssignment[]
   shareLinks        ReportShareLink[]
   guestLinks        GuestAssessmentLink[]
+  emailDeliveries   EmailDeliveryLog[]
+  actionItems       AssessmentActionItem[]
   aiSummaries       AiAssessmentSummary[]
   auditLogs         AuditLog[]
   notifications     Notification[]
@@ -255,6 +337,32 @@ model AssessmentRunAssignment {
   toUser            User?         @relation("AssessmentRunToUser", fields: [toUserId], references: [id], onDelete: SetNull, onUpdate: Cascade)
 }
 
+model AssessmentRunParticipant {
+  id                String                      @id @default(cuid())
+  assessmentRunId   String
+  userId            String?
+  externalContactId String?
+  externalAccessToken String?                    @unique
+  externalAccessExpiresAt DateTime?
+  externalAccessRevoked Boolean                  @default(false)
+  displayName       String
+  email             String?
+  status            AssessmentParticipantStatus @default(INVITED)
+  invitedAt         DateTime                    @default(now())
+  startedAt         DateTime?
+  submittedAt       DateTime?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  assessmentRun     AssessmentRun               @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  user              User?                       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  externalContact   ExternalContact?            @relation(fields: [externalContactId], references: [id], onDelete: SetNull)
+  responses         ParticipantAssessmentResponse[]
+  emailDeliveries   EmailDeliveryLog[]
+
+  @@unique([assessmentRunId, userId])
+  @@unique([assessmentRunId, externalContactId])
+}
+
 model AssessmentResponse {
   id              String           @id @default(cuid())
   assessmentRunId String
@@ -268,6 +376,21 @@ model AssessmentResponse {
   question        TemplateQuestion @relation(fields: [questionId], references: [id])
 
   @@unique([assessmentRunId, questionId])
+}
+
+model ParticipantAssessmentResponse {
+  id              String                   @id @default(cuid())
+  participantId   String
+  questionId      String
+  selectedValue   Int
+  selectedLabel   String
+  comment         String?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  participant     AssessmentRunParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  question        TemplateQuestion         @relation(fields: [questionId], references: [id])
+
+  @@unique([participantId, questionId])
 }
 
 model ReportShareLink {
@@ -287,6 +410,7 @@ model GuestAssessmentLink {
   token             String        @unique
   assessmentRunId   String
   createdByUserId   String
+  externalContactId String?
   inviteLabel       String?
   guestDisplayName  String?
   guestEmail        String?
@@ -298,6 +422,46 @@ model GuestAssessmentLink {
   createdAt         DateTime      @default(now())
   assessmentRun     AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
   createdByUser     User          @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  externalContact   ExternalContact? @relation(fields: [externalContactId], references: [id], onDelete: SetNull)
+  emailDeliveries   EmailDeliveryLog[]
+}
+
+model EmailDeliveryLog {
+  id              String              @id @default(cuid())
+  type            String
+  status          EmailDeliveryStatus @default(PENDING)
+  recipientEmail  String
+  recipientName   String?
+  subject         String
+  errorMessage    String?
+  assessmentRunId String?
+  guestLinkId     String?
+  participantId   String?
+  createdByUserId String?
+  sentAt          DateTime?
+  failedAt        DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  assessmentRun   AssessmentRun?      @relation(fields: [assessmentRunId], references: [id], onDelete: SetNull)
+  guestLink       GuestAssessmentLink? @relation(fields: [guestLinkId], references: [id], onDelete: SetNull)
+  participant     AssessmentRunParticipant? @relation(fields: [participantId], references: [id], onDelete: SetNull)
+  createdByUser   User?               @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+}
+
+model AssessmentActionItem {
+  id              String        @id @default(cuid())
+  assessmentRunId String
+  title           String
+  description     String?
+  domainTitle     String?
+  ownerName       String?
+  dueDate         DateTime?
+  status          String        @default("OPEN")
+  createdByUserId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  assessmentRun   AssessmentRun @relation(fields: [assessmentRunId], references: [id], onDelete: Cascade)
+  createdByUser   User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 }
 
 model AuditLog {

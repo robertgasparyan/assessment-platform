@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { AuditLogEntry } from "@/types";
@@ -19,6 +21,8 @@ function formatDate(value: string) {
 
 export function AuditTrailSection() {
   const [search, setSearch] = useState("");
+  const [entityFilter, setEntityFilter] = useState("all");
+  const [actorFilter, setActorFilter] = useState("all");
   const auditQuery = useQuery({
     queryKey: ["audit-logs"],
     queryFn: () => api.get<AuditLogEntry[]>("/audit-logs")
@@ -27,18 +31,67 @@ export function AuditTrailSection() {
   const filteredLogs = useMemo(() => {
     const query = search.trim().toLowerCase();
     return (auditQuery.data ?? []).filter((entry) => {
-      if (!query) {
-        return true;
-      }
-
-      return (
+      const matchesSearch = !query || (
         entry.summary.toLowerCase().includes(query)
         || entry.action.toLowerCase().includes(query)
         || entry.entityType.toLowerCase().includes(query)
         || (entry.actorUser?.displayName ?? "").toLowerCase().includes(query)
       );
+      const matchesEntity = entityFilter === "all" || entry.entityType === entityFilter;
+      const matchesActor = actorFilter === "all" || (actorFilter === "system" ? !entry.actorUser : entry.actorUser?.id === actorFilter);
+      return matchesSearch && matchesEntity && matchesActor;
     });
-  }, [auditQuery.data, search]);
+  }, [actorFilter, auditQuery.data, entityFilter, search]);
+  const entityOptions = useMemo(
+    () => [
+      { value: "all", label: "All entities" },
+      ...Array.from(new Set((auditQuery.data ?? []).map((entry) => entry.entityType)))
+        .sort()
+        .map((entityType) => ({ value: entityType, label: entityType }))
+    ],
+    [auditQuery.data]
+  );
+  const actorOptions = useMemo(() => {
+    const actors = new Map<string, string>();
+    let hasSystem = false;
+    for (const entry of auditQuery.data ?? []) {
+      if (entry.actorUser) {
+        actors.set(entry.actorUser.id, entry.actorUser.displayName);
+      } else {
+        hasSystem = true;
+      }
+    }
+
+    return [
+      { value: "all", label: "All actors" },
+      ...(hasSystem ? [{ value: "system", label: "System" }] : []),
+      ...Array.from(actors.entries())
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([id, label]) => ({ value: id, label }))
+    ];
+  }, [auditQuery.data]);
+
+  function exportFilteredLogs() {
+    const escapeCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const rows = [
+      ["createdAt", "actor", "action", "entityType", "entityId", "summary"],
+      ...filteredLogs.map((entry) => [
+        entry.createdAt,
+        entry.actorUser?.displayName ?? "System",
+        entry.action,
+        entry.entityType,
+        entry.entityId,
+        entry.summary
+      ])
+    ];
+    const csv = rows.map((row) => row.map(escapeCell).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "audit-trail.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
 
   const aiLogs = useMemo(
     () => (auditQuery.data ?? []).filter((entry) => entry.entityType === "ai_summary" || entry.action.includes(".ai_")),
@@ -219,9 +272,16 @@ export function AuditTrailSection() {
           <CardDescription>Search audit records by summary, action, entity, or actor.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="relative max-w-md">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-9" onChange={(event) => setSearch(event.target.value)} placeholder="Search audit trail" value={search} />
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr),220px,220px,auto]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-9" onChange={(event) => setSearch(event.target.value)} placeholder="Search audit trail" value={search} />
+            </div>
+            <Select options={entityOptions} value={entityFilter} onChange={(event) => setEntityFilter(event.target.value)} />
+            <Select options={actorOptions} value={actorFilter} onChange={(event) => setActorFilter(event.target.value)} />
+            <Button onClick={exportFilteredLogs} type="button" variant="outline">
+              Export CSV
+            </Button>
           </div>
 
           <Table>

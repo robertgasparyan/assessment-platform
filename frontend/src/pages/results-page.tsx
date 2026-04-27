@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import { Bot, Copy, ExternalLink, LoaderCircle, Sparkles } from "lucide-react";
 import { StatCard } from "@/components/stat-card";
+import { ActionItemsSection } from "@/components/action-items-section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +36,15 @@ import { toast } from "sonner";
 
 type QuestionDelta = AssessmentResults["delta"]["questions"][number];
 type AnswerFilter = "all" | "low" | "commented" | "changed";
+
+const reportDeepDivePrompts = [
+  "What are the top 3 risks in this report?",
+  "Why is the weakest domain the biggest focus area?",
+  "What changed most compared with the baseline?",
+  "Summarize the main comment themes.",
+  "What should leadership discuss first?",
+  "Which strengths should the team preserve?"
+];
 
 function formatScore(value: number | null | undefined) {
   return typeof value === "number" ? value.toFixed(2) : "-";
@@ -275,7 +285,7 @@ export function ResultsPage() {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isAiBriefOpen, setIsAiBriefOpen] = useState(false);
   const [aiQuestion, setAiQuestion] = useState("");
-  const [aiConversation, setAiConversation] = useState<Array<{ question: string; answer: string; supportingPoints: string[]; providerLabel: string | null }>>([]);
+  const [aiConversation, setAiConversation] = useState<Array<{ question: string; answer: string; supportingPoints: string[]; sources: string[]; providerLabel: string | null }>>([]);
   const queryClient = useQueryClient();
 
   const resultsQuery = useQuery({
@@ -374,7 +384,7 @@ export function ResultsPage() {
         }))
       }),
     onSuccess: (data, question) => {
-      setAiConversation((current) => [...current, { question, answer: data.answer, supportingPoints: data.supportingPoints, providerLabel: data.providerLabel }]);
+      setAiConversation((current) => [...current, { question, answer: data.answer, supportingPoints: data.supportingPoints, sources: data.sources ?? [], providerLabel: data.providerLabel }]);
       setAiQuestion("");
     },
     onError: (error) => {
@@ -433,6 +443,13 @@ export function ResultsPage() {
       ? "Enter a recipient email to send the submitted report."
       : null;
   const aiEnabledForResults = Boolean(aiStatusQuery.data?.enabled && results?.status === "SUBMITTED");
+  function askReportDeepDive(question: string) {
+    const normalized = question.trim();
+    if (normalized.length < 3) {
+      return;
+    }
+    aiAskMutation.mutate(normalized);
+  }
   const radarData = results?.domains.map((domain) => ({ domain: domain.title, score: domain.averageScore ?? 0 })) ?? [];
   const distributionData = results?.distribution.levels ?? [];
   const domainBarData = results?.domains.map((domain) => ({
@@ -777,6 +794,7 @@ export function ResultsPage() {
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <Badge variant={results?.status === "SUBMITTED" ? "success" : "secondary"}>{results?.status ?? "-"}</Badge>
+            {results?.aggregation.isAggregated ? <Badge variant="outline">Aggregated individual responses</Badge> : null}
             <span className="font-medium text-foreground">Submitted on {formatDate(results?.submittedAt)}</span>
             <span>Owner: {results?.ownerName || "-"}</span>
           </div>
@@ -788,15 +806,12 @@ export function ResultsPage() {
             <Button
               onClick={() => {
                 setIsAiBriefOpen(true);
-                if (!aiExecutiveSummaryMutation.data && !aiExecutiveSummaryMutation.isPending) {
-                  aiExecutiveSummaryMutation.mutate(false);
-                }
               }}
               type="button"
               variant="outline"
             >
               <Sparkles className="mr-2 h-4 w-4" />
-              AI Brief
+              AI Deep Dive
             </Button>
           ) : null}
           <Button onClick={exportResultsSummaryCsv} type="button" variant="outline">
@@ -810,6 +825,37 @@ export function ResultsPage() {
           </Button>
         </div>
       </div>
+
+      {results?.aggregation.isAggregated ? (
+        <Card className="print-hidden border-primary/25 bg-[linear-gradient(135deg,_rgba(238,248,232,0.78),_rgba(255,255,255,0.98))]">
+          <CardHeader>
+            <CardTitle>Aggregated from individual team-member responses</CardTitle>
+            <CardDescription>
+              This submitted result was produced from separately submitted participant answers, not from a single shared workshop response.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-4">
+            <div className="rounded-[1rem] border bg-white px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Submitted participants</div>
+              <div className="mt-2 text-xl font-semibold text-foreground">
+                {results.aggregation.submittedParticipantCount}/{results.aggregation.participantCount}
+              </div>
+            </div>
+            <div className="rounded-[1rem] border bg-white px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Required</div>
+              <div className="mt-2 text-xl font-semibold text-foreground">{results.aggregation.requiredParticipantCount}</div>
+            </div>
+            <div className="rounded-[1rem] border bg-white px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Saved answers</div>
+              <div className="mt-2 text-xl font-semibold text-foreground">{results.aggregation.totalParticipantResponses}</div>
+            </div>
+            <div className="rounded-[1rem] border bg-white px-4 py-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Method</div>
+              <div className="mt-2 text-sm font-medium leading-5 text-foreground">{results.aggregation.method}</div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="print-hidden grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-[1.25rem] border bg-white px-4 py-3">
@@ -918,29 +964,43 @@ export function ResultsPage() {
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <CardTitle>AI Brief</CardTitle>
+                <CardTitle>AI Report Deep Dive</CardTitle>
                 <CardDescription>
-                  Open an optional AI-generated executive brief without crowding the main report surface.
+                  Ask focused questions about this submitted report, generate an executive brief, or use prompt shortcuts for leadership review.
                 </CardDescription>
               </div>
               <Button
                 onClick={() => {
                   setIsAiBriefOpen(true);
-                  if (!aiExecutiveSummaryMutation.data && !aiExecutiveSummaryMutation.isPending) {
-                    aiExecutiveSummaryMutation.mutate(false);
-                  }
                 }}
                 type="button"
                 variant="outline"
               >
                 <Bot className="mr-2 h-4 w-4" />
-                Open AI Brief
+                Open Deep Dive
               </Button>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
-              AI analysis stays in a separate slide-over so users can opt into recommendations and narrative guidance only when useful.
+          <CardContent className="space-y-4">
+            <div className="rounded-[1.1rem] border border-dashed px-4 py-5 text-sm text-muted-foreground">
+              AI analysis stays scoped to this submitted report, selected baseline, comments, domain scores, and aggregation metadata.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {reportDeepDivePrompts.slice(0, 4).map((prompt) => (
+                <Button
+                  disabled={aiAskMutation.isPending}
+                  key={prompt}
+                  onClick={() => {
+                    setIsAiBriefOpen(true);
+                    askReportDeepDive(prompt);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {prompt}
+                </Button>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -1014,6 +1074,8 @@ export function ResultsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {results ? <ActionItemsSection results={results} /> : null}
 
           <div className="grid gap-6 xl:grid-cols-[1fr,1fr]">
             <Card>
@@ -1916,10 +1978,10 @@ export function ResultsPage() {
             <div className="sticky top-0 z-10 border-b border-border/80 bg-white/95 px-5 py-4 backdrop-blur">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">AI Brief</div>
-                  <h2 className="mt-1 text-xl font-semibold text-foreground">Executive AI summary</h2>
+                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">AI Report Deep Dive</div>
+                  <h2 className="mt-1 text-xl font-semibold text-foreground">Ask, brief, and inspect this report</h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Optional AI layer for this submitted run. Use it as supporting analysis, not as a replacement for the report itself.
+                    Optional AI layer scoped to this submitted run. Use it as supporting analysis, not as a replacement for the report itself.
                   </p>
                 </div>
                 <Button onClick={() => setIsAiBriefOpen(false)} type="button" variant="outline">
@@ -1929,6 +1991,117 @@ export function ResultsPage() {
             </div>
 
             <div className="space-y-5 px-5 py-5">
+              <div className="rounded-[1.35rem] border border-primary/20 bg-primary/5 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">Ask this report</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Start with a shortcut or ask your own question. Answers are grounded in this report, comments, selected baseline, and aggregation metadata.
+                    </p>
+                  </div>
+                  <Badge variant="outline">Report-scoped</Badge>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {reportDeepDivePrompts.map((prompt) => (
+                    <Button
+                      disabled={aiAskMutation.isPending}
+                      key={prompt}
+                      onClick={() => askReportDeepDive(prompt)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {prompt}
+                    </Button>
+                  ))}
+                </div>
+                <div className="mt-4 space-y-3">
+                  <Label htmlFor="ask-this-report">Question</Label>
+                  <Textarea
+                    id="ask-this-report"
+                    placeholder="Example: What is the biggest risk in this report, and why?"
+                    value={aiQuestion}
+                    onChange={(event) => setAiQuestion(event.target.value)}
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      disabled={aiAskMutation.isPending || aiQuestion.trim().length < 3}
+                      onClick={() => askReportDeepDive(aiQuestion)}
+                      type="button"
+                    >
+                      {aiAskMutation.isPending ? (
+                        <>
+                          <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                          Asking...
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="mr-2 h-4 w-4" />
+                          Ask this report
+                        </>
+                      )}
+                    </Button>
+                    <div className="text-xs text-muted-foreground">
+                      Generated from submitted report data only{selectedComparisonRunId !== "auto" ? " with the current baseline selection" : ""}.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {aiConversation.length ? (
+                <div className="space-y-3">
+                  <div className="text-sm font-semibold text-foreground">Deep-dive conversation</div>
+                  {aiConversation.map((item, index) => (
+                    <div className="rounded-[1.1rem] border bg-muted/20 p-4" key={`ai-conversation-top-${index}`}>
+                      <div className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Question</div>
+                      <div className="mt-1 text-sm font-medium text-foreground">{item.question}</div>
+                      <div className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-primary">Answer</div>
+                      <div className="mt-1 text-sm leading-7 text-foreground">{item.answer}</div>
+                      {item.supportingPoints.length ? (
+                        <div className="mt-4 space-y-2">
+                          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Supporting points</div>
+                          {item.supportingPoints.map((point, pointIndex) => (
+                            <div className="rounded-xl bg-white px-3 py-2 text-sm text-muted-foreground" key={`ai-supporting-point-top-${index}-${pointIndex}`}>
+                              {point}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {item.sources.length ? (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {item.sources.map((source, sourceIndex) => (
+                            <Badge key={`ai-source-${index}-${sourceIndex}`} variant="outline">{source}</Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button
+                          onClick={async () => {
+                            const text = [
+                              `Question: ${item.question}`,
+                              "",
+                              `Answer: ${item.answer}`,
+                              ...(item.supportingPoints.length ? ["", "Supporting points:", ...item.supportingPoints.map((point) => `- ${point}`)] : []),
+                              ...(item.sources.length ? ["", "Sources:", ...item.sources.map((source) => `- ${source}`)] : [])
+                            ].join("\n");
+                            await navigator.clipboard.writeText(text);
+                            toast.success("AI answer copied");
+                          }}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copy answer
+                        </Button>
+                        {item.providerLabel ? <Badge variant="outline">{item.providerLabel}</Badge> : null}
+                        <Badge variant="outline">Submitted report data only</Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap items-center gap-3">
                 <Badge variant="secondary">{results?.team.name}</Badge>
                 <Badge variant="outline">{results?.periodLabel}</Badge>
@@ -1942,7 +2115,7 @@ export function ResultsPage() {
                   type="button"
                   variant="outline"
                 >
-                  {aiExecutiveSummaryMutation.isPending ? "Refreshing..." : "Regenerate"}
+                  {aiExecutiveSummaryMutation.isPending ? "Refreshing..." : aiExecutiveSummaryMutation.data ? "Regenerate brief" : "Generate executive brief"}
                 </Button>
                 {aiExecutiveSummaryMutation.data ? (
                   <Button
@@ -2040,98 +2213,6 @@ export function ResultsPage() {
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Last refreshed: {aiExecutiveSummaryMutation.data.cachedAt ? formatDate(aiExecutiveSummaryMutation.data.cachedAt) : "Just now"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-[1.25rem] border bg-white p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-foreground">Ask this report</div>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          Ask a focused question about this submitted run only. Answers stay scoped to the current report and selected baseline context.
-                        </p>
-                      </div>
-                      <Badge variant="outline">Report-scoped</Badge>
-                    </div>
-
-                    <div className="mt-4 space-y-3">
-                      <Label htmlFor="ask-this-report">Question</Label>
-                      <Textarea
-                        id="ask-this-report"
-                        placeholder="Example: What is the biggest risk in this report, and why?"
-                        value={aiQuestion}
-                        onChange={(event) => setAiQuestion(event.target.value)}
-                      />
-                      <div className="flex flex-wrap items-center gap-3">
-                        <Button
-                          disabled={aiAskMutation.isPending || aiQuestion.trim().length < 3}
-                          onClick={() => aiAskMutation.mutate(aiQuestion.trim())}
-                          type="button"
-                        >
-                          {aiAskMutation.isPending ? (
-                            <>
-                              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                              Asking...
-                            </>
-                          ) : (
-                            <>
-                              <Bot className="mr-2 h-4 w-4" />
-                              Ask this report
-                            </>
-                          )}
-                        </Button>
-                        <div className="text-xs text-muted-foreground">
-                          Generated from submitted report data only{selectedComparisonRunId !== "auto" ? " with the current baseline selection" : ""}.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 space-y-3">
-                      {aiConversation.length ? (
-                        aiConversation.map((item, index) => (
-                          <div className="rounded-[1.1rem] border bg-muted/20 p-4" key={`ai-conversation-${index}`}>
-                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Question</div>
-                            <div className="mt-1 text-sm font-medium text-foreground">{item.question}</div>
-                            <div className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-primary">Answer</div>
-                            <div className="mt-1 text-sm leading-7 text-foreground">{item.answer}</div>
-                            {item.supportingPoints.length ? (
-                              <div className="mt-4 space-y-2">
-                                {item.supportingPoints.map((point, pointIndex) => (
-                                  <div className="rounded-xl bg-white px-3 py-2 text-sm text-muted-foreground" key={`ai-supporting-point-${index}-${pointIndex}`}>
-                                    {point}
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              <Button
-                                onClick={async () => {
-                                  const text = [
-                                    `Question: ${item.question}`,
-                                    "",
-                                    `Answer: ${item.answer}`,
-                                    ...(item.supportingPoints.length ? ["", "Supporting points:", ...item.supportingPoints.map((point) => `- ${point}`)] : [])
-                                  ].join("\n");
-                                  await navigator.clipboard.writeText(text);
-                                  toast.success("AI answer copied");
-                                }}
-                                size="sm"
-                                type="button"
-                                variant="outline"
-                              >
-                                <Copy className="mr-2 h-4 w-4" />
-                                Copy answer
-                              </Button>
-                              {item.providerLabel ? <Badge variant="outline">{item.providerLabel}</Badge> : null}
-                              <Badge variant="outline">Submitted report data only</Badge>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="rounded-[1.1rem] border border-dashed px-4 py-6 text-sm text-muted-foreground">
-                          No questions asked yet. Use this to get a focused answer without leaving the Results view.
-                        </div>
-                      )}
                     </div>
                   </div>
                 </>

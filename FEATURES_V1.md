@@ -28,6 +28,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 
 - Dedicated `Administration` workspace
 - `User Management` section
+- `External Contacts` section
 - `Configurations` section
 - `Audit Trail` section
 - `Data Model` section with compact and visual relationship maps
@@ -43,8 +44,18 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - Force password change on next login
 - Generate one-time activation links for onboarding
 - Track last login
+- Manage reusable external contacts for guest and outside participant workflows
+- Add external contacts as tokenized individual assessment participants without creating platform accounts
+- Regenerate, revoke, or update expiry for external individual participant links
+- Review active external participant links from the security overview
+- AI aggregation insight for individual participant response variance and comment themes before aggregation
+- Send participant reminder emails
+- Send bulk participant invites/reminders and view latest participant email delivery status
 - Configure submitted-report email delivery
 - Configure SMTP host, port, and from address
+- Review email delivery history and failed send attempts
+- Open external contact profiles with participant, guest-link, and recent email history
+- Review security hygiene metrics and clear expired sessions/invites
 - Portable JSON export
 - Full JSON export
 - PostgreSQL dump download when `pg_dump` is available
@@ -80,6 +91,8 @@ This file is the high-level feature inventory for the current `v1.0` release bas
   - `Compose`
   - `Review`
 - Draft template support
+- Draft publish-readiness checklist
+- Ready-for-review draft status
 - Existing template editing through new version creation
 - Published template versioning
 - Slug auto-generation from template name with manual override
@@ -89,8 +102,10 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - AI question improvement assist
 - AI question generation from the authoring flow
 - AI domain refinement assist
-- AI draft consistency review
+- AI Template Reviewer with readiness score, risk level, blockers, domain-balance notes, and maturity-scale notes
+- Separate `AI Chat` tab for conversational template creation
 - Separate `AI Builder` tab for guided AI-assisted template creation
+- Chat-based AI template creation with clarifying questions and draft handoff
 - One-shot full AI draft generation into the authoring studio
 - Separate tabs for:
   - `Author`
@@ -136,12 +151,14 @@ This file is the high-level feature inventory for the current `v1.0` release bas
   - optional assigned owner user
   - optional due date
   - duplicate-run detection
+- Copy an existing run into a new draft without copying responses
 - Supported period types:
   - `QUARTER`
   - `CUSTOM_RANGE`
   - `POINT_IN_TIME`
 - Active run operations:
   - continue
+  - copy
   - archive
   - delete
 - Archived run restore flow
@@ -170,6 +187,7 @@ This file is the high-level feature inventory for the current `v1.0` release bas
   - next-unanswered shortcuts
   - compact facilitator domain agenda
   - current-domain progress visibility
+- Participant management filters, participant search, and bulk copy for pending external links
 
 ## Results
 
@@ -187,11 +205,12 @@ This file is the high-level feature inventory for the current `v1.0` release bas
 - Optional AI Brief slide-over for submitted runs
 - AI Brief copy action
 - AI Brief cached summary reuse and explicit regenerate
+- AI Report Deep Dive with prompt shortcuts, report-scoped Q&A, supporting points, and source labels
 - Submitted-data-only metadata and last-refreshed metadata
 - Read-only report sharing with selectable expiry, open/copy actions, and revoke support
 - Excel-friendly CSV export for both domain summary and detailed answers
 - Metadata strip for submitted context
-- No fake persisted recommendations or action plans in v1.0
+- Persisted action-plan items with owner label, due date, domain context, and status
 
 ## Reports
 

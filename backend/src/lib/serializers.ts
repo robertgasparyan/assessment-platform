@@ -1,4 +1,4 @@
-import { AssessmentPeriodType, AssessmentRunStatus, Prisma } from "@prisma/client";
+import { AssessmentPeriodType, AssessmentResponseMode, AssessmentRunStatus, AssessmentTargetType, Prisma } from "@prisma/client";
 
 type TemplateVersionGraph = Prisma.TemplateVersionGetPayload<{
   include: {
@@ -21,6 +21,7 @@ type AssessmentRunBaseGraph = Prisma.AssessmentRunGetPayload<{
         group: true;
       };
     };
+    target: true;
     ownerUser: true;
     templateVersion: {
       include: {
@@ -158,6 +159,19 @@ export function serializeAssessmentRun(run: AssessmentRunWithAssignmentHistory) 
   return {
     id: run.id,
     title: run.title,
+    target: run.target
+      ? {
+          id: run.target.id,
+          type: run.target.type,
+          displayName: run.target.displayName
+        }
+      : {
+          id: run.team.id,
+          type: AssessmentTargetType.TEAM,
+          displayName: run.team.name
+        },
+    responseMode: run.responseMode ?? AssessmentResponseMode.SHARED,
+    minimumParticipantResponses: run.minimumParticipantResponses ?? null,
     team: run.team,
     ownerUser: run.ownerUser
       ? {

@@ -17,6 +17,7 @@ type AiExecutiveSummary = {
 type AiResultsQuestionAnswer = {
   answer: string;
   supportingPoints: string[];
+  sources: string[];
 };
 
 function formatMaybeScore(value: number | null | undefined) {
@@ -256,6 +257,15 @@ export async function generateResultsQuestionAnswer({
     )
     .join("\n");
 
+  const commentedQuestions = results.domains
+    .flatMap((domain) =>
+      domain.questions
+        .filter((question) => question.response?.comment?.trim())
+        .slice(0, 10)
+        .map((question) => `- ${domain.title}: ${question.prompt} | answer ${question.response?.selectedLabel ?? "n/a"} (${question.response?.selectedValue ?? "n/a"}) | comment: ${question.response?.comment?.trim() ?? ""}`)
+    )
+    .join("\n");
+
   const conversationHistory = history
     .slice(-6)
     .map((item, index) => `${index + 1}. Q: ${item.question}\n   A: ${item.answer}`)
@@ -266,7 +276,8 @@ export async function generateResultsQuestionAnswer({
 Return only valid JSON with this exact shape:
 {
   "answer": "string",
-  "supportingPoints": ["string", "string", "string"]
+  "supportingPoints": ["string", "string", "string"],
+  "sources": ["string", "string", "string"]
 }
 
 Rules:
@@ -277,6 +288,8 @@ Rules:
 - If a baseline is present, use it only when relevant to the user's question.
 - Use prior conversation context only to resolve follow-up references such as "that", "this", or "why".
 - Do not treat prior conversation as new evidence; the evidence still comes only from the provided report data.
+- Supporting points should explain the reasoning.
+- Sources should name the concrete report signals used, such as domain scores, focus-area questions, changed questions, comments, aggregation metadata, or baseline delta.
 
 Report context:
 - title: ${results.title}
@@ -287,6 +300,7 @@ Report context:
 - strongest domain: ${results.highlights.strongestDomain ? `${results.highlights.strongestDomain.title} (${formatMaybeScore(results.highlights.strongestDomain.score)})` : "n/a"}
 - weakest domain: ${results.highlights.weakestDomain ? `${results.highlights.weakestDomain.title} (${formatMaybeScore(results.highlights.weakestDomain.score)})` : "n/a"}
 - baseline available: ${results.previousRun ? `yes, ${results.previousRun.title} (${results.previousRun.periodLabel}) with overall delta ${formatMaybeScore(results.delta.overallScoreChange)}` : "no"}
+- aggregation: ${results.aggregation.isAggregated ? `aggregated from ${results.aggregation.submittedParticipantCount}/${results.aggregation.participantCount} submitted participant responses using ${results.aggregation.method ?? "aggregation"}` : "not aggregated"}
 
 Domain scores:
 ${domainSummary || "- none"}
@@ -300,6 +314,9 @@ ${focusSignals || "- none"}
 Meaningful changed questions:
 ${changedQuestions || "- none"}
 
+Comment signals:
+${commentedQuestions || "- none"}
+
 Prior Q&A in this report session:
 ${conversationHistory || "- none"}
 
@@ -311,6 +328,7 @@ ${question}`;
   return {
     answer: output.answer,
     supportingPoints: output.supportingPoints ?? [],
+    sources: output.sources ?? [],
     providerLabel: output.visibleProviderLabel
   };
 }

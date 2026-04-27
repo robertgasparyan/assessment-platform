@@ -13,6 +13,7 @@ const TeamsPage = lazy(() => import("@/pages/teams-page").then((module) => ({ de
 const TeamDetailPage = lazy(() => import("@/pages/team-detail-page").then((module) => ({ default: module.TeamDetailPage })));
 const TeamGroupDetailPage = lazy(() => import("@/pages/team-group-detail-page").then((module) => ({ default: module.TeamGroupDetailPage })));
 const AdministrationPage = lazy(() => import("@/pages/administration-page").then((module) => ({ default: module.AdministrationPage })));
+const ExternalContactDetailPage = lazy(() => import("@/pages/external-contact-detail-page").then((module) => ({ default: module.ExternalContactDetailPage })));
 const AssessmentsPage = lazy(() => import("@/pages/assessments-page").then((module) => ({ default: module.AssessmentsPage })));
 const MyAssessmentsPage = lazy(() => import("@/pages/my-assessments-page").then((module) => ({ default: module.MyAssessmentsPage })));
 const ReportsPage = lazy(() => import("@/pages/reports-page").then((module) => ({ default: module.ReportsPage })));
@@ -21,6 +22,12 @@ const GuestAssessmentPage = lazy(() => import("@/pages/guest-assessment-page").t
 const GuestSharedResultsPage = lazy(() => import("@/pages/guest-shared-results-page").then((module) => ({ default: module.GuestSharedResultsPage })));
 const AssessmentRunPage = lazy(() =>
   import("@/pages/assessment-run-page").then((module) => ({ default: module.AssessmentRunPage }))
+);
+const ParticipantAssessmentPage = lazy(() =>
+  import("@/pages/participant-assessment-page").then((module) => ({ default: module.ParticipantAssessmentPage }))
+);
+const ExternalParticipantAssessmentPage = lazy(() =>
+  import("@/pages/external-participant-assessment-page").then((module) => ({ default: module.ExternalParticipantAssessmentPage }))
 );
 const ResultsPage = lazy(() => import("@/pages/results-page").then((module) => ({ default: module.ResultsPage })));
 const TemplateDocumentPage = lazy(() =>
@@ -80,6 +87,17 @@ export default function App() {
     );
   }
 
+  if (window.location.pathname.startsWith("/external-participant-assessments/")) {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/external-participant-assessments/:token" element={<ExternalParticipantAssessmentPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    );
+  }
+
   if (isLoading) {
     return <RouteFallback />;
   }
@@ -104,12 +122,14 @@ export default function App() {
           <Route path="/teams/:teamId" element={<TeamDetailPage />} />
           <Route path="/team-groups/:groupId" element={<TeamGroupDetailPage />} />
           <Route path="/administration" element={<AdministrationPage />} />
+          <Route path="/external-contacts/:contactId" element={<ExternalContactDetailPage />} />
           <Route path="/users" element={<Navigate replace to="/administration?tab=users" />} />
           <Route path="/audit-trail" element={<Navigate replace to="/administration?tab=audit" />} />
           <Route path="/assessments" element={<AssessmentsPage />} />
           <Route path="/my-assessments" element={<MyAssessmentsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/assessments/:runId" element={<AssessmentRunPage />} />
+          <Route path="/assessments/:runId/participant" element={<ParticipantAssessmentPage />} />
           <Route path="/assessments/:runId/results" element={<ResultsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

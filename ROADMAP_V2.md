@@ -29,17 +29,25 @@ Planned direction:
 
 The likely design question is whether v2 introduces a generic assessment target model such as `AssessmentTarget` or `Participant`, instead of overloading `Team`.
 
+Initial foundation now exists:
+- `AssessmentTarget` models the assessment subject independently from `Team`.
+- `AssessmentRun.responseMode` distinguishes shared collaborative runs from future individual/aggregated workflows.
+- `AssessmentRunParticipant` and `ParticipantAssessmentResponse` prepare the data model for multiple team members answering individually before a team-level report is generated.
+- External contacts can also be added as tokenized individual participants without platform accounts.
+- Existing team-level runs remain compatible because `SHARED` is still the default mode.
+
 ### External and guest maturity
 
 Guest access in v1 is functional for run-specific participation. Version 2 should mature it into a stronger external collaboration model.
 
 Candidates:
-- reusable external contacts
-- stronger invite lifecycle management
+- reusable external contacts (initial admin directory implemented)
+- tokenized external individual participant links (initial implementation complete)
+- stronger invite lifecycle management (initial revoke/regenerate/reminder controls implemented)
 - reusable invite templates
 - guest identity history across runs
 - clearer external participant reporting
-- email-backed guest invitations
+- email-backed guest invitations (initial send action and delivery history implemented)
 - stronger revocation and expiry administration
 
 ### Group-level operations and reporting
@@ -60,9 +68,9 @@ Version 1 deliberately avoids fake persisted recommendations or action items. Ve
 
 Candidates:
 - action plans linked to submitted runs
-- owners
-- due dates
-- status tracking
+- owners (initial owner label implemented)
+- due dates (initial due date implemented)
+- status tracking (initial status field implemented)
 - comments or updates
 - follow-up assessment links
 - AI-assisted draft action plans with explicit human acceptance
@@ -76,6 +84,7 @@ Candidates:
 - email invitation delivery
 - SSO or OIDC
 - stronger session controls
+- stronger session controls (initial admin hygiene metrics and expired cleanup implemented)
 - better access-policy review tools
 - optional organization-level security settings
 
@@ -88,7 +97,7 @@ Candidates:
 - due-soon and overdue email reminders
 - submitted report notifications
 - guest invitation emails
-- report-share emails with delivery history
+- report-share emails with delivery history (initial submitted-report email tracking implemented)
 - notification preferences
 
 ### Advanced AI assistant
@@ -138,4 +147,3 @@ Current v1 code and docs can still say `team` where the feature is specifically 
 5. Add action-plan persistence after submitted results.
 6. Add email-backed notifications and reset flows.
 7. Expand AI assistant retrieval and workflow actions.
-

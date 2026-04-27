@@ -1,4 +1,4 @@
-import { AssessmentRunStatus, Prisma } from "@prisma/client";
+import { AssessmentParticipantStatus, AssessmentResponseMode, AssessmentRunStatus, Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { serializeAssessmentRun } from "./serializers.js";
 
@@ -12,6 +12,7 @@ const assessmentRunResultsInclude = Prisma.validator<Prisma.AssessmentRunInclude
       group: true
     }
   },
+  target: true,
   ownerUser: true,
   templateVersion: {
     include: {
@@ -40,6 +41,23 @@ export async function buildAssessmentResultsPayload(runId: string, compareToRunI
   }
 
   const serialized = serializeAssessmentRun(run);
+  const participantAggregation =
+    run.responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED
+      ? await prisma.assessmentRunParticipant.findMany({
+          where: {
+            assessmentRunId: run.id
+          },
+          select: {
+            status: true,
+            _count: {
+              select: {
+                responses: true
+              }
+            }
+          }
+        })
+      : [];
+  const submittedParticipantCount = participantAggregation.filter((participant) => participant.status === AssessmentParticipantStatus.SUBMITTED).length;
 
   const comparisonCandidatesData = await prisma.assessmentRun.findMany({
     where: {
@@ -93,7 +111,8 @@ export async function buildAssessmentResultsPayload(runId: string, compareToRunI
         include: {
           group: true
         }
-      }
+      },
+      target: true
     }
   });
 
@@ -178,6 +197,16 @@ export async function buildAssessmentResultsPayload(runId: string, compareToRunI
 
   return {
     ...serialized,
+    aggregation: {
+      isAggregated: run.responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED && run.status === AssessmentRunStatus.SUBMITTED,
+      method: run.responseMode === AssessmentResponseMode.INDIVIDUAL_AGGREGATED ? "Average submitted participant answers, then round to nearest maturity level" : null,
+      participantCount: participantAggregation.length,
+      submittedParticipantCount,
+      requiredParticipantCount: run.minimumParticipantResponses
+        ? Math.min(run.minimumParticipantResponses, participantAggregation.length)
+        : participantAggregation.length,
+      totalParticipantResponses: participantAggregation.reduce((sum, participant) => sum + participant._count.responses, 0)
+    },
     trend: trendData.map((item) => ({
       assessmentRunId: item.id,
       periodLabel: item.periodLabel,

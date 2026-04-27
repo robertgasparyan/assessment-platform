@@ -1435,14 +1435,14 @@ export function TemplateAuthoringStudio({
                 <div className="rounded-[1.25rem] border border-primary/20 bg-primary/5 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-foreground">AI consistency review</div>
+                      <div className="text-sm font-semibold text-foreground">AI Template Reviewer</div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        Optional review for wording consistency, level progression, and overlap across the draft.
+                        Optional review for blockers, structure, wording consistency, level progression, and domain balance.
                       </div>
                     </div>
                     <Button disabled={consistencyReviewMutation.isPending} onClick={() => consistencyReviewMutation.mutate()} type="button" variant="outline">
                       <Sparkles className="mr-2 h-4 w-4" />
-                      {consistencyReviewMutation.isPending ? "Reviewing..." : "Run AI review"}
+                      {consistencyReviewMutation.isPending ? "Reviewing..." : "Run AI reviewer"}
                     </Button>
                   </div>
                   {lastConsistencyReview ? (
@@ -1450,8 +1450,24 @@ export function TemplateAuthoringStudio({
                       <div className="flex flex-wrap items-center gap-2">
                         {lastConsistencyReview.providerLabel ? <Badge variant="outline">{lastConsistencyReview.providerLabel}</Badge> : null}
                         <Badge variant="outline">Draft-only review</Badge>
+                        <Badge variant={lastConsistencyReview.riskLevel === "low" ? "success" : lastConsistencyReview.riskLevel === "high" ? "secondary" : "outline"}>
+                          {lastConsistencyReview.riskLevel} risk
+                        </Badge>
+                        <Badge variant="outline">{lastConsistencyReview.readinessScore}/100 readiness</Badge>
                       </div>
                       <div className="rounded-xl bg-white/85 p-3 text-sm text-foreground">{lastConsistencyReview.summary}</div>
+                      {lastConsistencyReview.publishBlockers.length ? (
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Publish blockers</div>
+                          <div className="mt-2 space-y-2">
+                            {lastConsistencyReview.publishBlockers.map((item, index) => (
+                              <div className="rounded-xl border border-destructive/20 bg-secondary px-3 py-2 text-sm text-foreground" key={`consistency-blocker-${index}`}>
+                                {item}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       <div>
                         <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Strengths</div>
                         <div className="mt-2 space-y-2">
@@ -1480,6 +1496,30 @@ export function TemplateAuthoringStudio({
                               {item}
                             </div>
                           ))}
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Domain balance</div>
+                          <div className="mt-2 space-y-2">
+                            {lastConsistencyReview.domainBalanceNotes.map((item, index) => (
+                              <div className="rounded-xl bg-white/85 px-3 py-2 text-sm text-foreground" key={`consistency-domain-balance-${index}`}>
+                                {item}
+                              </div>
+                            ))}
+                            {!lastConsistencyReview.domainBalanceNotes.length ? <div className="text-sm text-muted-foreground">No specific domain-balance notes.</div> : null}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Maturity scale</div>
+                          <div className="mt-2 space-y-2">
+                            {lastConsistencyReview.maturityScaleNotes.map((item, index) => (
+                              <div className="rounded-xl bg-white/85 px-3 py-2 text-sm text-foreground" key={`consistency-maturity-${index}`}>
+                                {item}
+                              </div>
+                            ))}
+                            {!lastConsistencyReview.maturityScaleNotes.length ? <div className="text-sm text-muted-foreground">No specific maturity-scale notes.</div> : null}
+                          </div>
                         </div>
                       </div>
                     </div>

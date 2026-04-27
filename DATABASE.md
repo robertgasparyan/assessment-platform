@@ -80,13 +80,18 @@ The database currently stores these main entity groups:
 - `Category`
 - `TeamGroup`
 - `Team`
+- `ExternalContact`
+- `AssessmentTarget`
 - `TemplateDraft`
 - `QuestionLibraryItem`
 - `DomainLibraryItem`
 - versioned template entities
 - `AssessmentRun`
+- `AssessmentRunParticipant`
 - assessment responses and result-related snapshot data
 - `ReportShareLink`
+- `EmailDeliveryLog`
+- `AssessmentActionItem`
 - `AuditLog`
 - `Notification`
 - `PlatformSetting`
@@ -120,6 +125,20 @@ Assessment runs currently use:
 - `SUBMITTED`
 - `ARCHIVED`
 
+### Broader participant model foundation
+
+- `AssessmentTarget` is the forward-compatible subject model for team, group, internal-user, external-contact, and standalone assessment targets.
+- Existing team-level runs remain supported through `AssessmentRun.teamId`; new runs also receive a team-backed `targetId`.
+- `AssessmentRun.responseMode` defaults to `SHARED`, preserving the current collaborative team-run behavior.
+- `AssessmentRunParticipant` and `ParticipantAssessmentResponse` are the foundation for future individual participant submissions that can later be aggregated into a team-level result.
+- Initial internal participant guardrails require participant users to be active members of the selected assessment team.
+- `ExternalContact` stores reusable outside participants that can be attached to guest assessment links.
+- `GuestAssessmentLink.externalContactId` keeps a guest link connected to the reusable external contact when the creator selects one.
+- `EmailDeliveryLog` stores participant invite, guest invite, and submitted-report email attempts with `PENDING`, `SENT`, or `FAILED` status.
+- `AssessmentRunParticipant.externalAccessToken` supports tokenized individual-response links for external contacts who should not have platform accounts.
+- External individual participant responses use the same `ParticipantAssessmentResponse` rows as internal participant responses, so aggregation logic remains shared.
+- `AssessmentActionItem` stores persisted follow-up actions linked to submitted assessment results.
+
 ### Admin authentication
 
 - `User` stores platform accounts.
@@ -148,6 +167,8 @@ Assessment runs currently use:
 ### Shared reports and governance
 
 - `ReportShareLink` stores tokenized read-only access for submitted results.
+- `EmailDeliveryLog` stores recent outbound email delivery attempts, linked back to the relevant run, guest link, participant, and sending user when available.
+- `AssessmentActionItem` stores result follow-up actions with owner label, due date, domain context, and status.
 - `AuditLog` stores key governance events for users, runs, report sharing, teams, team groups, and team memberships.
 - `Notification` stores user-level in-app alerts such as assignment and submission events.
 
@@ -179,7 +200,7 @@ If the Prisma schema changes:
 npm run db:push
 ```
 
-For the current v1 baseline, `TeamGroup` and `Team.groupId` are part of the schema. Live environments should run `npm run db:push` after pulling these changes so the database is synchronized before users manage team groups.
+For the current baseline, `TeamGroup`, `Team.groupId`, and the broader participant-model foundation tables are part of the schema. Live environments should run `npm run db:push` after pulling these changes so the database is synchronized before users manage team groups or participant-model features.
 
 If you also want fresh demo/reference data:
 

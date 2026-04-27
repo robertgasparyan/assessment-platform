@@ -10,11 +10,15 @@ import { NavigationSearchSection } from "@/components/navigation-search-section"
 import { UsersManagementSection } from "@/components/users-management-section";
 import { AiConfigurationSection } from "@/components/ai-configuration-section";
 import { EmailConfigurationSection } from "@/components/email-configuration-section";
+import { EmailDeliveryHistorySection } from "@/components/email-delivery-history-section";
+import { ExternalContactsSection } from "@/components/external-contacts-section";
+import { SecurityOverviewSection } from "@/components/security-overview-section";
 import { AuditTrailSection } from "@/components/audit-trail-section";
 import { DataModelSection } from "@/components/data-model-section";
 
 const adminTabs = [
   { value: "users", label: "User Management", icon: Users },
+  { value: "contacts", label: "External Contacts", icon: Users },
   { value: "configurations", label: "Configurations", icon: Settings2 },
   { value: "audit", label: "Audit Trail", icon: ScrollText },
   { value: "data-model", label: "Data Model", icon: Database }
@@ -23,7 +27,7 @@ const adminTabs = [
 type AdministrationTab = (typeof adminTabs)[number]["value"];
 
 function normalizeTab(value: string | null): AdministrationTab {
-  if (value === "users" || value === "configurations" || value === "audit" || value === "data-model") {
+  if (value === "users" || value === "contacts" || value === "configurations" || value === "audit" || value === "data-model") {
     return value;
   }
 
@@ -91,12 +95,18 @@ export function AdministrationPage() {
           <UsersManagementSection />
         </TabsContent>
 
+        <TabsContent className="space-y-6" value="contacts">
+          <ExternalContactsSection />
+        </TabsContent>
+
         <TabsContent className="space-y-6" value="configurations">
           <ApplicationBrandingSection />
           <NavigationSearchSection />
           <AiAssistantSection />
           <AiConfigurationSection />
           <EmailConfigurationSection />
+          <EmailDeliveryHistorySection />
+          <SecurityOverviewSection />
         </TabsContent>
 
         <TabsContent className="space-y-6" value="audit">
@@ -112,6 +122,8 @@ export function AdministrationPage() {
         Existing direct links still work:
         {" "}
         <Link className="font-medium text-primary" to="/administration?tab=users">User Management</Link>
+        {" · "}
+        <Link className="font-medium text-primary" to="/administration?tab=contacts">External Contacts</Link>
         {" · "}
         <Link className="font-medium text-primary" to="/administration?tab=configurations">Configurations</Link>
         {" · "}

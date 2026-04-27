@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/features/auth-context";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { AssessmentPeriodType, AssessmentRunSummary, Team, TemplateSummary, UserSummary } from "@/types";
+import type { AssessmentPeriodType, AssessmentResponseMode, AssessmentRunSummary, ExternalContact, Team, TemplateSummary, UserSummary } from "@/types";
 
 type DuplicateCheckResponse = {
   periodLabel: string;
@@ -32,6 +32,7 @@ type DuplicateCheckResponse = {
 
 type PendingRunAction =
   | { type: "archive"; run: AssessmentRunSummary }
+  | { type: "copy"; run: AssessmentRunSummary }
   | { type: "delete"; run: AssessmentRunSummary }
   | { type: "restore"; run: AssessmentRunSummary };
 
@@ -102,6 +103,7 @@ function RunTable({
   actionLabel,
   emptyMessage,
   onArchive,
+  onCopy,
   onDelete,
   onRestore,
   runs,
@@ -110,6 +112,7 @@ function RunTable({
   actionLabel?: string;
   emptyMessage: string;
   onArchive?: (run: AssessmentRunSummary) => void;
+  onCopy?: (run: AssessmentRunSummary) => void;
   onDelete?: (run: AssessmentRunSummary) => void;
   onRestore?: (run: AssessmentRunSummary) => void;
   runs: AssessmentRunSummary[];
@@ -147,6 +150,7 @@ function RunTable({
               <div className="space-y-1">
                 <div className="font-medium">{run.title}</div>
                 {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                {run.responseMode === "INDIVIDUAL_AGGREGATED" ? <Badge variant="secondary">Individual responses</Badge> : null}
               </div>
             </TableCell>
             <TableCell>
@@ -182,6 +186,11 @@ function RunTable({
                     {actionLabel ?? (submittedView ? "View results" : "Continue")}
                   </Link>
                 ) : null}
+                {run.status !== "ARCHIVED" && onCopy ? (
+                  <Button onClick={() => onCopy(run)} size="sm" type="button" variant="outline">
+                    Copy
+                  </Button>
+                ) : null}
                 {!submittedView && run.status !== "ARCHIVED" && onArchive ? (
                   <Button onClick={() => onArchive(run)} size="sm" type="button" variant="outline">
                     Archive
@@ -195,11 +204,6 @@ function RunTable({
                 {submittedView && run.status !== "ARCHIVED" && onArchive ? (
                   <Button onClick={() => onArchive(run)} size="sm" type="button" variant="outline">
                     Archive
-                  </Button>
-                ) : null}
-                {submittedView && run.status !== "ARCHIVED" && onDelete ? (
-                  <Button onClick={() => onDelete(run)} size="sm" type="button" variant="ghost">
-                    Remove
                   </Button>
                 ) : null}
                 {!submittedView && run.status === "ARCHIVED" && onRestore ? (
@@ -230,6 +234,10 @@ export function AssessmentsPage() {
   const [ownerUserId, setOwnerUserId] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [guestParticipationEnabled, setGuestParticipationEnabled] = useState(false);
+  const [responseMode, setResponseMode] = useState<AssessmentResponseMode>("SHARED");
+  const [participantUserIds, setParticipantUserIds] = useState<string[]>([]);
+  const [participantExternalContactIds, setParticipantExternalContactIds] = useState<string[]>([]);
+  const [minimumParticipantResponses, setMinimumParticipantResponses] = useState("");
   const [periodType, setPeriodType] = useState<AssessmentPeriodType>("QUARTER");
   const [periodLabel, setPeriodLabel] = useState("");
   const [year, setYear] = useState(new Date().getFullYear());
@@ -266,6 +274,10 @@ export function AssessmentsPage() {
   const usersQuery = useQuery({
     queryKey: ["assignable-users"],
     queryFn: () => api.get<UserSummary[]>("/users/assignable")
+  });
+  const externalContactsQuery = useQuery({
+    queryKey: ["external-contacts"],
+    queryFn: () => api.get<ExternalContact[]>("/external-contacts")
   });
 
   const templateOptions = useMemo(
@@ -314,6 +326,29 @@ export function AssessmentsPage() {
 
   const selectedTemplate = (templatesQuery.data ?? []).find((template) => template.id === templateId);
   const selectedTeam = (teamsQuery.data ?? []).find((team) => team.id === teamId);
+  const teamParticipantOptions = useMemo(
+    () =>
+      (usersQuery.data ?? [])
+        .filter((candidate) => candidate.teams.some((team) => team.id === teamId))
+        .map((candidate) => ({
+          id: candidate.id,
+          label: candidate.displayName,
+          detail: `${candidate.username}${candidate.email ? ` · ${candidate.email}` : ""}`
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [teamId, usersQuery.data]
+  );
+  const externalParticipantOptions = useMemo(
+    () =>
+      (externalContactsQuery.data ?? [])
+        .map((contact) => ({
+          id: contact.id,
+          label: contact.displayName,
+          detail: `${contact.email || "No email"}${contact.organization ? ` · ${contact.organization}` : ""}`
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [externalContactsQuery.data]
+  );
   const ownerFilterOptions = useMemo(
     () => [{ value: "all", label: "All assignees" }, { value: "unassigned", label: "Unassigned" }, ...ownerOptions.filter((option) => option.value)],
     [ownerOptions]
@@ -353,6 +388,18 @@ export function AssessmentsPage() {
       ownerName: selectedOwner?.displayName || undefined,
       dueDate: dueDate ? toIsoDate(dueDate) : undefined,
       guestParticipationEnabled,
+      responseMode,
+      minimumParticipantResponses:
+        responseMode === "INDIVIDUAL_AGGREGATED" && minimumParticipantResponses
+          ? Number(minimumParticipantResponses)
+          : undefined,
+      participantCollection:
+        responseMode === "INDIVIDUAL_AGGREGATED"
+          ? {
+              userIds: participantUserIds,
+              externalContactIds: participantExternalContactIds
+            }
+          : undefined,
       periodType,
       periodLabel: periodLabel.trim() || undefined
     };
@@ -375,7 +422,7 @@ export function AssessmentsPage() {
       periodType,
       referenceDate: referenceDate ? toIsoDate(referenceDate) : ""
     };
-  }, [dueDate, effectiveTitle, endDate, guestParticipationEnabled, ownerUserId, periodLabel, periodType, quarter, referenceDate, selectedOwner?.displayName, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, year]);
+  }, [dueDate, effectiveTitle, endDate, guestParticipationEnabled, minimumParticipantResponses, ownerUserId, participantExternalContactIds, participantUserIds, periodLabel, periodType, quarter, referenceDate, responseMode, selectedOwner?.displayName, selectedTemplate?.latestVersion?.id, startDate, teamId, templateId, year]);
 
   const periodReady =
     periodType === "QUARTER"
@@ -384,7 +431,9 @@ export function AssessmentsPage() {
         ? Boolean(startDate && endDate)
         : Boolean(referenceDate);
 
-  const createReady = Boolean(effectiveTitle.trim() && teamId && templateId && selectedTemplate?.latestVersion?.id && periodReady);
+  const totalSelectedParticipants = participantUserIds.length + participantExternalContactIds.length;
+  const participantsReady = responseMode === "SHARED" || totalSelectedParticipants > 0;
+  const createReady = Boolean(effectiveTitle.trim() && teamId && templateId && selectedTemplate?.latestVersion?.id && periodReady && participantsReady);
 
   const duplicateCheckQuery = useQuery({
     queryKey: ["assessment-run-duplicate-check", createPayload],
@@ -395,6 +444,10 @@ export function AssessmentsPage() {
   useEffect(() => {
     setAllowDuplicate(false);
   }, [createPayload]);
+
+  useEffect(() => {
+    setParticipantUserIds([]);
+  }, [teamId]);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -410,6 +463,10 @@ export function AssessmentsPage() {
       setOwnerUserId("");
       setDueDate("");
       setGuestParticipationEnabled(false);
+      setResponseMode("SHARED");
+      setParticipantUserIds([]);
+      setParticipantExternalContactIds([]);
+      setMinimumParticipantResponses("");
       setPeriodLabel("");
       setStartDate("");
       setEndDate("");
@@ -426,6 +483,16 @@ export function AssessmentsPage() {
     onSuccess: () => {
       toast.success("Run archived");
       queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+    },
+    onError: (error: Error) => toast.error(error.message)
+  });
+  const copyRunMutation = useMutation({
+    mutationFn: (runId: string) => api.post<AssessmentRunSummary>(`/assessment-runs/${runId}/copy`),
+    onSuccess: () => {
+      toast.success("Run copied");
+      queryClient.invalidateQueries({ queryKey: ["assessment-runs"] });
+      setPageTab("active");
+      setSearchParams({ tab: "active" });
     },
     onError: (error: Error) => toast.error(error.message)
   });
@@ -765,6 +832,10 @@ export function AssessmentsPage() {
       deleteMutation.mutate(pendingRunAction.run.id);
     }
 
+    if (pendingRunAction.type === "copy") {
+      copyRunMutation.mutate(pendingRunAction.run.id);
+    }
+
     if (pendingRunAction.type === "restore") {
       restoreMutation.mutate(pendingRunAction.run.id);
     }
@@ -784,20 +855,23 @@ export function AssessmentsPage() {
         }
       : pendingRunAction.type === "delete"
         ? {
-            title: pendingRunAction.run.status === "SUBMITTED" ? "Remove submitted run?" : "Delete assessment run?",
-            description:
-              pendingRunAction.run.status === "SUBMITTED"
-                ? "This permanently removes the submitted run, its responses, and related sharing history. This action cannot be undone."
-                : "This permanently removes the draft run and all saved responses. This action cannot be undone.",
-            confirmLabel: pendingRunAction.run.status === "SUBMITTED" ? "Remove run" : "Delete run"
+            title: "Delete assessment run?",
+            description: "This permanently removes the draft run and all saved responses. This action cannot be undone.",
+            confirmLabel: "Delete run"
           }
-        : {
-            title: "Restore assessment run?",
-            description: pendingRunAction.run.submittedAt
-              ? "The archived submitted run will return to the submitted list."
-              : "The run will return to the active list and can be continued from its previous draft state.",
-            confirmLabel: "Restore run"
-          }
+        : pendingRunAction.type === "copy"
+          ? {
+              title: "Copy assessment run?",
+              description: "A new draft run will be created with the same template, team, period, owner, response mode, and participant setup. Saved answers are not copied.",
+              confirmLabel: "Copy run"
+            }
+          : {
+              title: "Restore assessment run?",
+              description: pendingRunAction.run.submittedAt
+                ? "The archived submitted run will return to the submitted list."
+                : "The run will return to the active list and can be continued from its previous draft state.",
+              confirmLabel: "Restore run"
+            }
     : null;
 
   return (
@@ -1053,6 +1127,142 @@ export function AssessmentsPage() {
                 </label>
               </div>
 
+              <div className="space-y-3 rounded-[1.25rem] border bg-[linear-gradient(135deg,_rgba(238,248,232,0.7),_rgba(255,255,255,0.98))] p-4 md:col-span-2">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <Label>Response mode</Label>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      Keep shared mode for workshop-style scoring. Use individual mode when team members should answer separately in a later workflow step.
+                    </div>
+                  </div>
+                  <Badge variant={responseMode === "INDIVIDUAL_AGGREGATED" ? "default" : "outline"}>
+                    {responseMode === "INDIVIDUAL_AGGREGATED" ? "Individual team members" : "Shared team response"}
+                  </Badge>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label
+                    className={`cursor-pointer rounded-[1rem] border px-4 py-3 text-sm transition ${
+                      responseMode === "SHARED" ? "border-primary/40 bg-primary/10" : "bg-white hover:bg-muted/30"
+                    }`}
+                  >
+                    <input
+                      checked={responseMode === "SHARED"}
+                      className="sr-only"
+                      onChange={() => setResponseMode("SHARED")}
+                      type="radio"
+                    />
+                    <span className="block font-semibold text-foreground">Shared team response</span>
+                    <span className="mt-1 block text-muted-foreground">Current behavior: one collaborative answer set for the team.</span>
+                  </label>
+                  <label
+                    className={`cursor-pointer rounded-[1rem] border px-4 py-3 text-sm transition ${
+                      responseMode === "INDIVIDUAL_AGGREGATED" ? "border-primary/40 bg-primary/10" : "bg-white hover:bg-muted/30"
+                    }`}
+                  >
+                    <input
+                      checked={responseMode === "INDIVIDUAL_AGGREGATED"}
+                      className="sr-only"
+                      onChange={() => setResponseMode("INDIVIDUAL_AGGREGATED")}
+                      type="radio"
+                    />
+                    <span className="block font-semibold text-foreground">Individual team member responses</span>
+                    <span className="mt-1 block text-muted-foreground">Prepare a run where selected team members answer individually.</span>
+                  </label>
+                </div>
+                {responseMode === "INDIVIDUAL_AGGREGATED" ? (
+                  <div className="space-y-3 rounded-[1rem] border bg-white p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-foreground">Participants</div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          Select registered team members and/or external contacts. Everyone answers separately, then managers aggregate submitted responses into the final result.
+                        </div>
+                      </div>
+                      <Badge variant={totalSelectedParticipants ? "outline" : "secondary"}>{totalSelectedParticipants} selected</Badge>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)] md:items-end">
+                      <div className="space-y-2">
+                        <Label>Minimum submissions</Label>
+                        <Input
+                          min="1"
+                          max={totalSelectedParticipants || undefined}
+                          onChange={(event) => setMinimumParticipantResponses(event.target.value)}
+                          placeholder="All selected"
+                          type="number"
+                          value={minimumParticipantResponses}
+                        />
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        Leave blank to require every selected participant before aggregation. Set a lower number when partial participation is acceptable.
+                      </div>
+                    </div>
+                    {externalParticipantOptions.length ? (
+                      <div className="space-y-2">
+                        <div className="text-sm font-medium text-foreground">External contacts</div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {externalParticipantOptions.map((contact) => (
+                            <label className="flex items-start gap-3 rounded-xl border bg-muted/10 px-3 py-3 text-sm" key={contact.id}>
+                              <input
+                                checked={participantExternalContactIds.includes(contact.id)}
+                                className="mt-1"
+                                onChange={(event) => {
+                                  setParticipantExternalContactIds((current) =>
+                                    event.target.checked
+                                      ? Array.from(new Set([...current, contact.id]))
+                                      : current.filter((contactId) => contactId !== contact.id)
+                                  );
+                                }}
+                                type="checkbox"
+                              />
+                              <span>
+                                <span className="block font-medium text-foreground">{contact.label}</span>
+                                <span className="block text-xs text-muted-foreground">{contact.detail}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed px-4 py-5 text-sm text-muted-foreground">
+                        No external contacts are available yet. You can add them in Administration &gt; External Contacts, or add them later from the run page.
+                      </div>
+                    )}
+                    <div className="text-sm font-medium text-foreground">Registered team members</div>
+                    {!teamId ? (
+                      <div className="rounded-xl border border-dashed px-4 py-5 text-sm text-muted-foreground">Select a team before choosing participants.</div>
+                    ) : teamParticipantOptions.length ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {teamParticipantOptions.map((participant) => (
+                          <label className="flex items-start gap-3 rounded-xl border bg-muted/10 px-3 py-3 text-sm" key={participant.id}>
+                            <input
+                              checked={participantUserIds.includes(participant.id)}
+                              className="mt-1"
+                              onChange={(event) => {
+                                setParticipantUserIds((current) =>
+                                  event.target.checked
+                                    ? Array.from(new Set([...current, participant.id]))
+                                    : current.filter((userId) => userId !== participant.id)
+                                );
+                              }}
+                              type="checkbox"
+                            />
+                            <span>
+                              <span className="block font-medium text-foreground">{participant.label}</span>
+                              <span className="block text-xs text-muted-foreground">{participant.detail}</span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed px-4 py-5 text-sm text-muted-foreground">
+                        This team has no active platform members available for individual participation.
+                      </div>
+                    )}
+                    {!participantsReady ? <div className="text-sm font-medium text-destructive">Select at least one participant to create this run.</div> : null}
+                  </div>
+                ) : null}
+              </div>
+
               <div className="md:col-span-2">
                 <Button
                   className="w-full md:w-auto"
@@ -1079,6 +1289,7 @@ export function AssessmentsPage() {
               <RunTable
                 emptyMessage="No active runs match the current filters."
                 onArchive={(run) => setPendingRunAction({ type: "archive", run })}
+                onCopy={(run) => setPendingRunAction({ type: "copy", run })}
                 onDelete={(run) => setPendingRunAction({ type: "delete", run })}
                 runs={filteredActiveRuns}
                 submittedView={false}
@@ -1095,6 +1306,7 @@ export function AssessmentsPage() {
               <RunTable
                 actionLabel="Archived"
                 emptyMessage="No archived runs match the current filters."
+                onCopy={(run) => setPendingRunAction({ type: "copy", run })}
                 onRestore={(run) => setPendingRunAction({ type: "restore", run })}
                 runs={filteredArchivedRuns}
                 submittedView={false}
@@ -1114,7 +1326,7 @@ export function AssessmentsPage() {
               <RunTable
                 emptyMessage="No submitted runs match the current filters."
                 onArchive={user?.role === "ADMIN" ? (run) => setPendingRunAction({ type: "archive", run }) : undefined}
-                onDelete={user?.role === "ADMIN" ? (run) => setPendingRunAction({ type: "delete", run }) : undefined}
+                onCopy={(run) => setPendingRunAction({ type: "copy", run })}
                 runs={filteredSubmittedRuns}
                 submittedView={true}
               />

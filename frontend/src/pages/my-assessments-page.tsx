@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatCard } from "@/components/stat-card";
 import { api } from "@/lib/api";
-import type { AssessmentRunSummary, MyAssessmentsSummary } from "@/types";
+import type { AssessmentParticipantStatus, AssessmentRunSummary, MyAssessmentsSummary } from "@/types";
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -23,12 +23,14 @@ function formatDate(value: string | null) {
 function RunTable({
   description,
   emptyMessage,
+  individual,
   runs,
   submitted
 }: {
   description: string;
   emptyMessage: string;
-  runs: AssessmentRunSummary[];
+  individual?: boolean;
+  runs: Array<AssessmentRunSummary & { participantStatus?: AssessmentParticipantStatus }>;
   submitted: boolean;
 }) {
   return (
@@ -56,6 +58,7 @@ function RunTable({
                     <div className="space-y-1">
                       <div className="font-medium">{run.title}</div>
                       {run.guestParticipationEnabled ? <Badge variant="outline">Guest-enabled</Badge> : null}
+                      {run.responseMode === "INDIVIDUAL_AGGREGATED" ? <Badge variant="secondary">Individual responses</Badge> : null}
                     </div>
                   </TableCell>
                   <TableCell>{run.team.name}</TableCell>
@@ -63,16 +66,16 @@ function RunTable({
                   <TableCell>{formatDate(run.dueDate)}</TableCell>
                   <TableCell>
                     <Badge variant={run.status === "SUBMITTED" ? "success" : run.status === "IN_PROGRESS" ? "default" : "secondary"}>
-                      {run.status}
+                      {individual && run.participantStatus ? run.participantStatus : run.status}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
                     <Link
                       className="text-sm font-medium text-primary"
                       state={{ returnTo: submitted ? "/my-assessments" : "/my-assessments" }}
-                      to={submitted ? `/assessments/${run.id}/results` : `/assessments/${run.id}`}
+                      to={submitted ? `/assessments/${run.id}/results` : individual ? `/assessments/${run.id}/participant` : `/assessments/${run.id}`}
                     >
-                      {submitted ? "View results" : "Open run"}
+                      {submitted ? "View results" : individual ? "Answer" : "Open run"}
                     </Link>
                   </TableCell>
                 </TableRow>
@@ -109,12 +112,20 @@ export function MyAssessmentsPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard hint="Runs where you are the explicit owner" label="Assigned to me" value={summary?.assignedActive.length ?? "-"} />
+        <StatCard hint="Individual team-member responses assigned to you" label="My responses" value={summary?.individualActive.length ?? "-"} />
         <StatCard hint="Other active team work you can contribute to" label="Team queue" value={summary?.teamActive.length ?? "-"} />
         <StatCard hint="Submitted runs you can review" label="Submitted access" value={summary?.submittedAccessible.length ?? "-"} />
       </div>
 
+      <RunTable
+        description="Individual team-member assessments where your response is collected separately."
+        emptyMessage="No individual responses are currently assigned to you."
+        individual
+        runs={summary?.individualActive ?? []}
+        submitted={false}
+      />
       <RunTable
         description="Runs where you are the current assigned owner."
         emptyMessage="No active runs are currently assigned to you."
