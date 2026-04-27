@@ -12,7 +12,7 @@ import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/features/auth-context";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AssessmentPeriodType, AssessmentResponseMode, AssessmentRunSummary, ExternalContact, Team, TemplateSummary, UserSummary } from "@/types";
 
@@ -277,7 +277,17 @@ export function AssessmentsPage() {
   });
   const externalContactsQuery = useQuery({
     queryKey: ["external-contacts"],
-    queryFn: () => api.get<ExternalContact[]>("/external-contacts")
+    queryFn: async () => {
+      try {
+        return await api.get<ExternalContact[]>("/external-contacts");
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          return [];
+        }
+
+        throw error;
+      }
+    }
   });
 
   const templateOptions = useMemo(

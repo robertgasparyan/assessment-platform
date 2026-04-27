@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/features/auth-context";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import type { AiAggregationInsight, AssessmentRunDetail, AssessmentRunParticipant, EmailDeliveryLog, ExternalContact, GuestAssessmentLink, GuestParticipationSettings, UserSummary } from "@/types";
 
 type ResponseState = Record<string, { selectedValue: number; selectedLabel: string; comment?: string }>;
@@ -188,7 +188,17 @@ export function AssessmentRunPage() {
   });
   const externalContactsQuery = useQuery({
     queryKey: ["external-contacts"],
-    queryFn: () => api.get<ExternalContact[]>("/external-contacts"),
+    queryFn: async () => {
+      try {
+        return await api.get<ExternalContact[]>("/external-contacts");
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          return [];
+        }
+
+        throw error;
+      }
+    },
     enabled: Boolean(runId && user)
   });
 

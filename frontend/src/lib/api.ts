@@ -2,6 +2,16 @@ import { clearAuthToken, getAuthToken } from "@/lib/auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAuthToken();
   const headers = new Headers(init?.headers);
@@ -30,11 +40,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const detail = errorBody.issues?.[0]
         ? `${errorBody.issues[0].path?.join(".")}: ${errorBody.issues[0].message}`
         : errorBody.message;
-      throw new Error(detail || "Request failed");
+      throw new ApiError(response.status, detail || "Request failed");
     }
 
     const message = await response.text();
-    throw new Error(message || "Request failed");
+    throw new ApiError(response.status, message || "Request failed");
   }
 
   if (response.status === 204) {
@@ -83,10 +93,10 @@ async function download(path: string, init?: RequestInit) {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       const errorBody = (await response.json()) as { message?: string };
-      throw new Error(errorBody.message || "Download failed");
+      throw new ApiError(response.status, errorBody.message || "Download failed");
     }
 
-    throw new Error((await response.text()) || "Download failed");
+    throw new ApiError(response.status, (await response.text()) || "Download failed");
   }
 
   const blob = await response.blob();
