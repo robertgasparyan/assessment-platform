@@ -135,7 +135,7 @@ export function ExternalContactsSection() {
     onError: (error: Error) => toast.error(error.message)
   });
 
-  const isSavingDisabled = externalContactsUnavailable || !form.displayName.trim() || saveMutation.isPending;
+  const isSavingDisabled = !form.displayName.trim() || saveMutation.isPending;
 
   return (
     <Card>
@@ -167,7 +167,6 @@ export function ExternalContactsSection() {
             <div className="space-y-2">
               <Label>Display name</Label>
               <Input
-                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, displayName: event.target.value }))}
                 placeholder="Board reviewer"
                 value={form.displayName}
@@ -176,7 +175,6 @@ export function ExternalContactsSection() {
             <div className="space-y-2">
               <Label>Email</Label>
               <Input
-                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
                 placeholder="reviewer@example.com"
                 type="email"
@@ -186,7 +184,6 @@ export function ExternalContactsSection() {
             <div className="space-y-2 md:col-span-2">
               <Label>Organization</Label>
               <Input
-                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, organization: event.target.value }))}
                 placeholder="Vendor, partner, board, or consultant group"
                 value={form.organization}
@@ -195,7 +192,6 @@ export function ExternalContactsSection() {
             <div className="space-y-2 md:col-span-2">
               <Label>Notes</Label>
               <Textarea
-                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
                 placeholder="Context for admins and assessment owners"
                 value={form.notes}
@@ -228,7 +224,6 @@ export function ExternalContactsSection() {
           </div>
           <Input
             className="max-w-sm"
-            disabled={externalContactsUnavailable}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search contacts..."
             value={search}
