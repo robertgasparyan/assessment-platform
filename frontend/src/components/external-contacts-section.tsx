@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
+import { externalContactsEnabled } from "@/lib/features";
 import type { ExternalContact } from "@/types";
 
 type ContactFormState = {
@@ -48,10 +49,29 @@ export function ExternalContactsSection() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ContactFormState>(emptyForm);
   const [search, setSearch] = useState("");
+  const [externalContactsUnavailable, setExternalContactsUnavailable] = useState(false);
 
   const contactsQuery = useQuery({
     queryKey: ["external-contacts"],
-    queryFn: () => api.get<ExternalContact[]>("/external-contacts")
+    queryFn: async () => {
+      if (!externalContactsEnabled) {
+        setExternalContactsUnavailable(true);
+        return [];
+      }
+
+      try {
+        setExternalContactsUnavailable(false);
+        return await api.get<ExternalContact[]>("/external-contacts");
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          setExternalContactsUnavailable(true);
+          return [];
+        }
+
+        throw error;
+      }
+    },
+    enabled: externalContactsEnabled
   });
 
   const selectedContact = useMemo(
@@ -92,7 +112,14 @@ export function ExternalContactsSection() {
       setEditingId(null);
       setForm(emptyForm);
     },
-    onError: (error: Error) => toast.error(error.message)
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        toast.error("External contacts are not available until the matching backend is deployed.");
+        return;
+      }
+
+      toast.error(error.message);
+    }
   });
 
   const deleteMutation = useMutation({
@@ -108,7 +135,7 @@ export function ExternalContactsSection() {
     onError: (error: Error) => toast.error(error.message)
   });
 
-  const isSavingDisabled = !form.displayName.trim() || saveMutation.isPending;
+  const isSavingDisabled = externalContactsUnavailable || !form.displayName.trim() || saveMutation.isPending;
 
   return (
     <Card>
@@ -119,6 +146,16 @@ export function ExternalContactsSection() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
+        {externalContactsUnavailable ? (
+          <div className="rounded-[1.25rem] border border-dashed bg-muted/20 px-4 py-4 text-sm text-muted-foreground">
+            External Contacts is not available on this environment yet. The current frontend expects newer backend routes such as
+            {" "}
+            <code>/api/external-contacts</code>
+            {" "}
+            that are not deployed on this server.
+          </div>
+        ) : null}
+
         <div className="grid gap-4 rounded-[1.5rem] border bg-muted/20 p-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
           <div>
             <div className="text-sm font-semibold">{editingId ? "Edit contact" : "Create contact"}</div>
@@ -130,6 +167,7 @@ export function ExternalContactsSection() {
             <div className="space-y-2">
               <Label>Display name</Label>
               <Input
+                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, displayName: event.target.value }))}
                 placeholder="Board reviewer"
                 value={form.displayName}
@@ -138,6 +176,7 @@ export function ExternalContactsSection() {
             <div className="space-y-2">
               <Label>Email</Label>
               <Input
+                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
                 placeholder="reviewer@example.com"
                 type="email"
@@ -147,6 +186,7 @@ export function ExternalContactsSection() {
             <div className="space-y-2 md:col-span-2">
               <Label>Organization</Label>
               <Input
+                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, organization: event.target.value }))}
                 placeholder="Vendor, partner, board, or consultant group"
                 value={form.organization}
@@ -155,6 +195,7 @@ export function ExternalContactsSection() {
             <div className="space-y-2 md:col-span-2">
               <Label>Notes</Label>
               <Textarea
+                disabled={externalContactsUnavailable}
                 onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
                 placeholder="Context for admins and assessment owners"
                 value={form.notes}
@@ -187,6 +228,7 @@ export function ExternalContactsSection() {
           </div>
           <Input
             className="max-w-sm"
+            disabled={externalContactsUnavailable}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search contacts..."
             value={search}
@@ -248,7 +290,11 @@ export function ExternalContactsSection() {
               {!filteredContacts.length ? (
                 <TableRow>
                   <TableCell className="text-center text-muted-foreground" colSpan={4}>
-                    {contactsQuery.isLoading ? "Loading contacts..." : "No external contacts found."}
+                    {contactsQuery.isLoading
+                      ? "Loading contacts..."
+                      : externalContactsUnavailable
+                        ? "External contacts are unavailable on this server."
+                        : "No external contacts found."}
                   </TableCell>
                 </TableRow>
               ) : null}

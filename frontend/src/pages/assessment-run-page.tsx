@@ -14,6 +14,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/features/auth-context";
 import { ApiError, api } from "@/lib/api";
+import { externalContactsEnabled } from "@/lib/features";
 import type { AiAggregationInsight, AssessmentRunDetail, AssessmentRunParticipant, EmailDeliveryLog, ExternalContact, GuestAssessmentLink, GuestParticipationSettings, UserSummary } from "@/types";
 
 type ResponseState = Record<string, { selectedValue: number; selectedLabel: string; comment?: string }>;
@@ -193,17 +194,24 @@ export function AssessmentRunPage() {
   const externalContactsQuery = useQuery({
     queryKey: ["external-contacts"],
     queryFn: async () => {
+      if (!externalContactsEnabled) {
+        setExternalContactsUnavailable(true);
+        return [];
+      }
+
       try {
+        setExternalContactsUnavailable(false);
         return await api.get<ExternalContact[]>("/external-contacts");
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) {
+          setExternalContactsUnavailable(true);
           return [];
         }
 
         throw error;
       }
     },
-    enabled: Boolean(runId && user)
+    enabled: externalContactsEnabled && Boolean(runId && user)
   });
 
   const [responses, setResponses] = useState<ResponseState>({});
@@ -222,6 +230,7 @@ export function AssessmentRunPage() {
   const [newExternalContactName, setNewExternalContactName] = useState("");
   const [newExternalContactEmail, setNewExternalContactEmail] = useState("");
   const [newExternalContactOrganization, setNewExternalContactOrganization] = useState("");
+  const [externalContactsUnavailable, setExternalContactsUnavailable] = useState(false);
   const [guestParticipationEnabled, setGuestParticipationEnabled] = useState(false);
   const [guestResultsVisible, setGuestResultsVisible] = useState(false);
   const [isGuestParticipationOpen, setIsGuestParticipationOpen] = useState(false);
@@ -355,7 +364,15 @@ export function AssessmentRunPage() {
       setNewExternalContactOrganization("");
       toast.success("External contact saved");
     },
-    onError: (error: Error) => toast.error(error.message)
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        setExternalContactsUnavailable(true);
+        toast.error("External contacts are not available until the matching backend is deployed.");
+        return;
+      }
+
+      toast.error(error.message);
+    }
   });
   const revokeGuestLinkMutation = useMutation({
     mutationFn: (guestLinkId: string) => api.post<GuestAssessmentLink>(`/assessment-runs/${runId}/guest-links/${guestLinkId}/revoke`),
@@ -1442,9 +1459,15 @@ export function AssessmentRunPage() {
                       </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),auto,auto] md:items-end">
+                      {externalContactsUnavailable ? (
+                        <div className="rounded-xl border border-dashed bg-muted/20 px-3 py-3 text-sm text-muted-foreground md:col-span-3">
+                          Reusable external contacts are not available on this environment yet because the matching backend routes are not deployed.
+                        </div>
+                      ) : null}
                       <div className="space-y-2 md:col-span-3">
                         <Label>Reusable external contact</Label>
                         <Select
+                          disabled={externalContactsUnavailable}
                           options={[
                             { value: "", label: "No contact / one-off guest link" },
                             ...externalContacts.map((contact) => ({
@@ -1459,6 +1482,7 @@ export function AssessmentRunPage() {
                       <div className="space-y-2">
                         <Label>Invite label</Label>
                         <Input
+                          disabled={externalContactsUnavailable}
                           onChange={(event) => setGuestInviteLabel(event.target.value)}
                           placeholder="Vendor workshop"
                           value={guestInviteLabel}
@@ -1467,6 +1491,7 @@ export function AssessmentRunPage() {
                       <div className="space-y-2">
                         <Label>Link expiry</Label>
                         <Select
+                          disabled={externalContactsUnavailable}
                           options={[
                             { value: "7", label: "7 days" },
                             { value: "14", label: "14 days" },
@@ -1477,7 +1502,7 @@ export function AssessmentRunPage() {
                           onChange={(event) => setGuestExpiryDays(event.target.value)}
                         />
                       </div>
-                      <Button disabled={createGuestLinkMutation.isPending} onClick={() => createGuestLinkMutation.mutate()} type="button">
+                      <Button disabled={externalContactsUnavailable || createGuestLinkMutation.isPending} onClick={() => createGuestLinkMutation.mutate()} type="button">
                         {createGuestLinkMutation.isPending ? "Creating..." : "Create guest link"}
                       </Button>
                     </div>
@@ -1486,18 +1511,18 @@ export function AssessmentRunPage() {
                       <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr),minmax(0,1fr),minmax(0,1fr),auto] md:items-end">
                         <div className="space-y-2">
                           <Label>Name</Label>
-                          <Input value={newExternalContactName} onChange={(event) => setNewExternalContactName(event.target.value)} />
+                          <Input disabled={externalContactsUnavailable} value={newExternalContactName} onChange={(event) => setNewExternalContactName(event.target.value)} />
                         </div>
                         <div className="space-y-2">
                           <Label>Email</Label>
-                          <Input value={newExternalContactEmail} onChange={(event) => setNewExternalContactEmail(event.target.value)} />
+                          <Input disabled={externalContactsUnavailable} value={newExternalContactEmail} onChange={(event) => setNewExternalContactEmail(event.target.value)} />
                         </div>
                         <div className="space-y-2">
                           <Label>Organization</Label>
-                          <Input value={newExternalContactOrganization} onChange={(event) => setNewExternalContactOrganization(event.target.value)} />
+                          <Input disabled={externalContactsUnavailable} value={newExternalContactOrganization} onChange={(event) => setNewExternalContactOrganization(event.target.value)} />
                         </div>
                         <Button
-                          disabled={!newExternalContactName.trim() || createExternalContactMutation.isPending}
+                          disabled={externalContactsUnavailable || !newExternalContactName.trim() || createExternalContactMutation.isPending}
                           onClick={() => createExternalContactMutation.mutate()}
                           type="button"
                           variant="outline"

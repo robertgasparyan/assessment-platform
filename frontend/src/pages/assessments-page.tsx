@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/features/auth-context";
 import { ApiError, api } from "@/lib/api";
+import { externalContactsEnabled } from "@/lib/features";
 import { cn } from "@/lib/utils";
 import type { AssessmentPeriodType, AssessmentResponseMode, AssessmentRunSummary, ExternalContact, Team, TemplateSummary, UserSummary } from "@/types";
 
@@ -278,6 +279,10 @@ export function AssessmentsPage() {
   const externalContactsQuery = useQuery({
     queryKey: ["external-contacts"],
     queryFn: async () => {
+      if (!externalContactsEnabled) {
+        return [];
+      }
+
       try {
         return await api.get<ExternalContact[]>("/external-contacts");
       } catch (error) {
@@ -287,7 +292,8 @@ export function AssessmentsPage() {
 
         throw error;
       }
-    }
+    },
+    enabled: externalContactsEnabled
   });
 
   const templateOptions = useMemo(
