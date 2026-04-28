@@ -60,8 +60,12 @@ function buildAbsoluteGuestUrl(guestUrl: string) {
 
 async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back when the browser blocks async clipboard access.
+    }
   }
 
   const textarea = document.createElement("textarea");
@@ -1065,9 +1069,18 @@ export function AssessmentRunPage() {
                       ) : null}
                     </div>
                     {participant.externalAccessUrl ? (
-                      <div className="mt-2 truncate rounded-lg bg-muted/40 px-2 py-1 text-xs text-muted-foreground" title={buildAbsoluteGuestUrl(participant.externalAccessUrl)}>
-                        {buildAbsoluteGuestUrl(participant.externalAccessUrl)}
-                      </div>
+                      <button
+                        className="mt-2 flex w-full items-center justify-between gap-2 rounded-lg bg-muted/40 px-2 py-1 text-left text-xs text-muted-foreground transition hover:bg-muted/70"
+                        onClick={async () => {
+                          await copyTextToClipboard(buildAbsoluteGuestUrl(participant.externalAccessUrl!));
+                          toast.success("External participant link copied");
+                        }}
+                        title={`${buildAbsoluteGuestUrl(participant.externalAccessUrl)}\nClick to copy`}
+                        type="button"
+                      >
+                        <span className="truncate">{buildAbsoluteGuestUrl(participant.externalAccessUrl)}</span>
+                        <span className="shrink-0 text-[11px] font-medium text-foreground">Copy</span>
+                      </button>
                     ) : null}
                     {participant.externalContact ? (
                       <div className="mt-2 flex flex-wrap gap-2">
