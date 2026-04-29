@@ -359,6 +359,18 @@ export type NavigationSearchSettings = {
   enabled: boolean;
 };
 
+export type BuildMetadata = {
+  version: string;
+  commit: string | null;
+  builtAt: string | null;
+  environment: string;
+};
+
+export type HealthStatus = {
+  ok: boolean;
+  backend?: BuildMetadata;
+};
+
 export type AiAssistantSettings = {
   enabled: boolean;
   available: boolean;

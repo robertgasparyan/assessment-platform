@@ -63,6 +63,7 @@ import {
 } from "./lib/ai-settings.js";
 import { sendReportEmail } from "./lib/smtp.js";
 import { config } from "./config.js";
+import { backendBuildInfo } from "./lib/build-info.js";
 
 const router = Router();
 
@@ -2327,7 +2328,10 @@ async function getLatestSubmittedRunsByTeamTemplate() {
 }
 
 router.get("/health", async (_request, response) => {
-  response.json({ ok: true });
+  response.json({
+    ok: true,
+    backend: backendBuildInfo
+  });
 });
 
 router.get("/settings/application-branding", async (_request, response) => {

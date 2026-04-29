@@ -13,6 +13,7 @@ import { EmailConfigurationSection } from "@/components/email-configuration-sect
 import { EmailDeliveryHistorySection } from "@/components/email-delivery-history-section";
 import { ExternalContactsSection } from "@/components/external-contacts-section";
 import { SecurityOverviewSection } from "@/components/security-overview-section";
+import { SystemVersionSection } from "@/components/system-version-section";
 import { AuditTrailSection } from "@/components/audit-trail-section";
 import { DataModelSection } from "@/components/data-model-section";
 
@@ -100,6 +101,7 @@ export function AdministrationPage() {
         </TabsContent>
 
         <TabsContent className="space-y-6" value="configurations">
+          <SystemVersionSection />
           <ApplicationBrandingSection />
           <NavigationSearchSection />
           <AiAssistantSection />
